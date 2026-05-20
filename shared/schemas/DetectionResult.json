@@ -1,0 +1,16 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DetectionResult",
+  "type": "object",
+  "properties": {
+    "camera_id": {
+      "type": "string",
+      "enum": ["left", "right"]
+    },
+    "detections": {
+      "type": "array",
+      "items": { "$ref": "DetectionBox.json" }
+    }
+  },
+  "required": ["camera_id", "detections"]
+}

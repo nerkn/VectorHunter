@@ -1,0 +1,25 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TelemetryMessage",
+  "type": "object",
+  "properties": {
+    "timestamp": { "type": "string", "format": "date-time" },
+    "altitude": { "type": "number" },
+    "speed": { "type": "number" },
+    "battery": { "type": "number" },
+    "mode": { "type": "string" },
+    "drone_position": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "target_position": {
+      "type": "array",
+      "items": { "type": "number" },
+      "minItems": 3,
+      "maxItems": 3
+    }
+  },
+  "required": ["timestamp", "altitude", "speed", "battery", "mode", "drone_position"]
+}
