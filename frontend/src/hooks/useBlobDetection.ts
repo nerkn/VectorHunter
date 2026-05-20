@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { detectBlobs, thresholdImage } from '../utils/blobDetector'
+import { thresholdImage } from '../utils/blobDetector'
 import { BlobTracker } from '../utils/blobTracker'
 import { useDetectionStore } from '../store/detectionStore'
 import { useCamFrameStore } from '../store/camFrameStore'
@@ -19,25 +19,21 @@ export function useBlobDetection() {
     const loop = (now: number) => {
       rafId = requestAnimationFrame(loop)
 
-      const { detectionFps } = useDetectionStore.getState()
+      const { detectionFps, threshold, minArea, maxArea } = useDetectionStore.getState()
       const interval = detectionFps > 0 ? 1000 / detectionFps : 1000
       if (now - lastRun < interval) return
       lastRun = now
 
-      const { config } = useDetectionStore.getState()
       const frameData = useCamFrameStore.getState().xorFrame
       if (!frameData) return
 
-      const binary = thresholdImage(frameData.pixels, frameData.w, frameData.h, config.threshold)
+      const binary = thresholdImage(frameData.pixels, frameData.w, frameData.h, threshold)
       tracker.setBinaryImage(binary, frameData.w, frameData.h)
+      tracker.setAreaRange(minArea, maxArea)
+      const tracked = tracker.update()
 
-      const rawBlobs = detectBlobs(frameData.pixels, frameData.w, frameData.h, config, [])
-      tracker.setAreaRange(config.minArea, config.maxArea)
-      const tracked = tracker.update(rawBlobs)
-
-      recordFrame(frameData.pixels, frameData.w, frameData.h, rawBlobs, tracked)
-
-      useDetectionStore.getState().setDetectionResult(rawBlobs, tracked)
+      recordFrame(frameData.pixels, frameData.w, frameData.h, tracked)
+      useDetectionStore.getState().setDetectionResult(tracked)
     }
 
     rafId = requestAnimationFrame(loop)

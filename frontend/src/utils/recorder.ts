@@ -1,10 +1,7 @@
-import { Blob } from './blobDetector'
 import { TrackedBlob } from './blobTracker'
 
 interface RecordedFrame {
   time: number
-  xorImage: ImageData
-  rawBlobs: Blob[]
   tracked: TrackedBlob[]
 }
 
@@ -26,24 +23,14 @@ export function startRecording(params: Recording['params']) {
 }
 
 export function recordFrame(
-  xorPixels: Uint8Array, w: number, h: number,
-  rawBlobs: Blob[], tracked: TrackedBlob[]
+  _pixels: Uint8Array, _w: number, _h: number,
+  tracked: TrackedBlob[]
 ) {
   if (!recording) return
   if (recording.frames.length >= 100) return
 
-  const imageData = new ImageData(w, h)
-  for (let i = 0; i < w * h; i++) {
-    imageData.data[i * 4] = xorPixels[i * 4]
-    imageData.data[i * 4 + 1] = xorPixels[i * 4 + 1]
-    imageData.data[i * 4 + 2] = xorPixels[i * 4 + 2]
-    imageData.data[i * 4 + 3] = 255
-  }
-
   recording.frames.push({
     time: performance.now(),
-    xorImage: imageData,
-    rawBlobs: rawBlobs.map(b => ({ ...b })),
     tracked: tracked.map(t => ({ ...t })),
   })
 }
@@ -61,3 +48,5 @@ export function stopRecording(): Recording | null {
   recording = null
   return r
 }
+
+export type { Recording, RecordedFrame }

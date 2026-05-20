@@ -1,5 +1,3 @@
-import { Blob } from './blobDetector'
-
 export interface TrackedBlob {
   internalId: number
   displayId: number | null
@@ -12,46 +10,43 @@ export interface TrackedBlob {
   lastSeen: number
   born: number
   framesSeen: number
+  missMs: number
   residualSpeed: number
   lowResidualFrames: number
+  highJerkFrames: number
   avgArea: number
-  avgAspect: number
 }
 
 interface TrackerConfig {
-  maxMissingMs: number
-  confirmationFrames: number
-  demotionFrames: number
-  velocitySmoothing: number
   searchRadius: number
-  enlargeStep: number
-  maxEnlarge: number
-  minWindowPixels: number
   minArea: number
   maxArea: number
+  confirmationFrames: number
+  demotionFrames: number
+  jerkDemotionFrames: number
+  jerkThreshold: number
   residualThreshold: number
-  gridSize: number
-  fullScanInterval: number
+  velocitySmoothing: number
+  maxMissingMs: number
+  frameDt: number
 }
 
 const DEFAULT_CONFIG: TrackerConfig = {
-  maxMissingMs: 600,
-  confirmationFrames: 5,
-  demotionFrames: 15,
-  velocitySmoothing: 0.5,
   searchRadius: 30,
-  enlargeStep: 15,
-  maxEnlarge: 60,
-  minWindowPixels: 4,
-  minArea: 8,
+  minArea: 4,
   maxArea: 128,
-  residualThreshold: 15,
-  gridSize: 16,
-  fullScanInterval: 5,
+  confirmationFrames: 3,
+  demotionFrames: 15,
+  jerkDemotionFrames: 5,
+  jerkThreshold: 60,
+  residualThreshold: 8,
+  velocitySmoothing: 0.5,
+  maxMissingMs: 600,
+  frameDt: 1 / 24,
 }
 
 export class BlobTracker {
-  private tracked: TrackedBlob[] = []
+  private table: TrackedBlob[] = []
   private nextId = 1
   private displayPool: number[] = []
   private activeDisplayIds = new Set<number>()
@@ -59,8 +54,6 @@ export class BlobTracker {
   private binary: Uint8Array | null = null
   private imgW = 0
   private imgH = 0
-  private frameCount = 0
-  private lastDm: { dx: number; dy: number } = { dx: 0, dy: 0 }
 
   constructor(config: Partial<TrackerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
@@ -78,388 +71,344 @@ export class BlobTracker {
     this.config.maxArea = max
   }
 
-  update(rawBlobs?: Blob[]): TrackedBlob[] {
-    if (!this.binary) return this.tracked
+  update(): TrackedBlob[] {
+    if (!this.binary) return this.table
     const now = performance.now()
-    this.frameCount++
+    const dt = this.config.frameDt
 
-    if (this.tracked.length === 0 && rawBlobs && rawBlobs.length > 0) {
-      this.bootstrap(rawBlobs, now)
-      return this.tracked
+    if (this.table.length === 0) {
+      this.initialScan(now)
+      return this.table
     }
 
-    if (this.frameCount === 1 && rawBlobs) {
-      this.bootstrap(rawBlobs, now)
-      return this.tracked
-    }
+    this.verify(now, dt)
+    this.deduplicate()
+    this.detectNew(now)
+    this.classify()
+    this.expire()
 
-    const examined = new Set<number>()
-
-    const noise = this.tracked.filter(t => t.displayId === null)
-    const targets = this.tracked.filter(t => t.displayId !== null)
-
-    const dm = this.searchNoise(noise, now, examined)
-
-    const targetResults = this.searchTargets(targets, dm, now, examined)
-
-    this.updateResidualSpeeds(dm)
-    this.demoteTargets(targetResults)
-
-    if (this.frameCount % this.config.fullScanInterval === 0) {
-      this.scanUnexamined(now, examined)
-    }
-
-    this.tracked = [...noise, ...targetResults]
-    this.confirmBlobs()
-    this.expireBlobs(now)
-
-    return this.tracked
+    return this.table
   }
 
   getTracked(): TrackedBlob[] {
-    return this.tracked
+    return this.table
   }
 
   getByDisplayId(displayId: number): TrackedBlob | undefined {
-    return this.tracked.find(t => t.displayId === displayId)
+    return this.table.find(t => t.displayId === displayId)
   }
 
   reset() {
-    this.tracked = []
+    this.table = []
     this.nextId = 1
     this.activeDisplayIds.clear()
     this.displayPool = [1, 2, 3, 4, 5, 6, 7, 8, 9]
-    this.frameCount = 0
-    this.lastDm = { dx: 0, dy: 0 }
   }
 
-  private bootstrap(rawBlobs: Blob[], now: number) {
-    for (const b of rawBlobs) {
-      this.tracked.push({
-        internalId: this.nextId++,
-        displayId: null,
-        cx: b.cx,
-        cy: b.cy,
-        vx: 0,
-        vy: 0,
-        area: b.area,
-        bbox: b.bbox,
-        lastSeen: now,
-        born: now,
-        framesSeen: 1,
-        residualSpeed: 0,
-        lowResidualFrames: 0,
-        avgArea: b.area,
-        avgAspect: 1,
-      })
-    }
-  }
-
-  private searchNoise(noise: TrackedBlob[], now: number, examined: Set<number>): { dx: number; dy: number } {
-    const activeNoise = noise.filter(t => (now - t.lastSeen) < 300)
-    if (activeNoise.length === 0) return this.lastDm
-
-    let runDx = this.lastDm.dx
-    let runDy = this.lastDm.dy
-    let count = 0
-
-    for (const prev of activeNoise) {
-      const predCx = prev.cx + runDx
-      const predCy = prev.cy + runDy
-
-      const firstRadius = count === 0 ? this.config.searchRadius * 2 : this.config.searchRadius
-      const found = this.findInBinary(predCx, predCy, firstRadius, examined, 0)
+  private verify(now: number, dt: number) {
+    for (const t of this.table) {
+      const predCx = t.cx + t.vx * dt
+      const predCy = t.cy + t.vy * dt
+      const found = this.searchAround(predCx, predCy, this.config.searchRadius)
 
       if (found) {
-        const measDt = Math.max(1, now - prev.lastSeen) / 1000
-        const dx = found.cx - prev.cx
-        const dy = found.cy - prev.cy
-        const rawVx = dx / measDt
-        const rawVy = dy / measDt
+        const rawVx = (found.cx - t.cx) / dt
+        const rawVy = (found.cy - t.cy) / dt
         const a = this.config.velocitySmoothing
+        const newVx = t.vx * (1 - a) + rawVx * a
+        const newVy = t.vy * (1 - a) + rawVy * a
+        const jerk = Math.sqrt((newVx - t.vx) ** 2 + (newVy - t.vy) ** 2)
 
-        prev.cx = found.cx
-        prev.cy = found.cy
-        prev.vx = prev.vx * (1 - a) + rawVx * a
-        prev.vy = prev.vy * (1 - a) + rawVy * a
-        prev.area = found.area
-        prev.bbox = found.bbox
-        prev.lastSeen = now
-        prev.framesSeen++
-
-        count++
-        runDx = runDx * (count - 1) / count + dx / count
-        runDy = runDy * (count - 1) / count + dy / count
+        t.cx = found.cx
+        t.cy = found.cy
+        t.vx = newVx
+        t.vy = newVy
+        t.area = found.area
+        t.bbox = found.bbox
+        t.avgArea = t.avgArea * 0.7 + found.area * 0.3
+        t.missMs = 0
+        t.framesSeen++
+        t.lastSeen = now
+        t.highJerkFrames = jerk > this.config.jerkThreshold ? t.highJerkFrames + 1 : 0
+      } else {
+        t.cx = predCx
+        t.cy = predCy
+        t.missMs += dt * 1000
+        t.highJerkFrames++
       }
     }
-
-    if (count > 0) {
-      const a = 0.5
-      this.lastDm.dx = this.lastDm.dx * (1 - a) + runDx * a
-      this.lastDm.dy = this.lastDm.dy * (1 - a) + runDy * a
-    }
-
-    return this.lastDm
   }
 
-  private searchTargets(
-    targets: TrackedBlob[],
-    dm: { dx: number; dy: number },
-    now: number,
-    examined: Set<number>
-  ): TrackedBlob[] {
-    const result: TrackedBlob[] = []
-
-    for (const prev of targets) {
-      const dt = Math.max(1, now - prev.lastSeen) / 1000
-      const bgVx = dm.dx / dt
-      const bgVy = dm.dy / dt
-      const residualVx = prev.vx - bgVx
-      const residualVy = prev.vy - bgVy
-
-      let predCx: number
-      let predCy: number
-      if (prev.residualSpeed > this.config.residualThreshold) {
-        predCx = prev.cx + bgVx * dt + residualVx * dt
-        predCy = prev.cy + bgVy * dt + residualVy * dt
-      } else {
-        predCx = prev.cx + dm.dx
-        predCy = prev.cy + dm.dy
-      }
-
-      let found = this.findInBinary(predCx, predCy, this.config.searchRadius, examined, prev.avgArea)
-
-      if (!found) {
-        for (let enlarge = this.config.enlargeStep; enlarge <= this.config.maxEnlarge; enlarge += this.config.enlargeStep) {
-          found = this.findInBinary(predCx, predCy, this.config.searchRadius + enlarge, examined, prev.avgArea)
-          if (found) break
+  private deduplicate() {
+    const toRemove = new Set<number>()
+    for (let i = 0; i < this.table.length; i++) {
+      if (toRemove.has(this.table[i].internalId)) continue
+      for (let j = i + 1; j < this.table.length; j++) {
+        if (toRemove.has(this.table[j].internalId)) continue
+        const a = this.table[i]
+        const b = this.table[j]
+        const dist = Math.sqrt((a.cx - b.cx) ** 2 + (a.cy - b.cy) ** 2)
+        if (dist < 5) {
+          const victim = a.framesSeen < b.framesSeen ? a : b
+          toRemove.add(victim.internalId)
+          if (victim.displayId !== null) this.releaseDisplayId(victim.displayId)
         }
       }
-
-      if (!found) {
-        found = this.findInBinary(prev.cx, prev.cy, this.config.searchRadius * 2, examined, prev.avgArea)
-      }
-
-      if (found) {
-        const measDt = Math.max(1, now - prev.lastSeen) / 1000
-        const rawVx = (found.cx - prev.cx) / measDt
-        const rawVy = (found.cy - prev.cy) / measDt
-        const a = this.config.velocitySmoothing
-
-        const bw = found.bbox[2] - found.bbox[0]
-        const bh = found.bbox[3] - found.bbox[1]
-        const aspect = bw > 0 && bh > 0 ? Math.min(bw, bh) / Math.max(bw, bh) : 1
-
-        result.push({
-          ...prev,
-          cx: found.cx,
-          cy: found.cy,
-          vx: prev.vx * (1 - a) + rawVx * a,
-          vy: prev.vy * (1 - a) + rawVy * a,
-          area: found.area,
-          bbox: found.bbox,
-          lastSeen: now,
-          framesSeen: prev.framesSeen + 1,
-          avgArea: prev.avgArea * 0.7 + found.area * 0.3,
-          avgAspect: prev.avgAspect * 0.7 + aspect * 0.3,
-          lowResidualFrames: prev.residualSpeed > this.config.residualThreshold ? 0 : prev.lowResidualFrames + 1,
-        })
-      } else {
-        result.push({
-          ...prev,
-          cx: predCx,
-          cy: predCy,
-          lowResidualFrames: prev.lowResidualFrames + 1,
-        })
-      }
     }
-
-    return result
+    if (toRemove.size > 0) {
+      this.table = this.table.filter(t => !toRemove.has(t.internalId))
+    }
   }
 
-  private findInBinary(
-    cx: number, cy: number, maxRadius: number, examined?: Set<number>, expectedArea?: number
-  ): { cx: number; cy: number; area: number; bbox: [number, number, number, number] } | null {
-    if (!this.binary) return null
+  private detectNew(now: number) {
+    if (!this.binary) return
 
-    let radius = maxRadius
+    const covered = new Uint8Array(this.imgW * this.imgH)
+    const r = this.config.searchRadius
 
-    while (radius >= 4) {
-      const x0 = Math.max(0, Math.round(cx - radius))
-      const y0 = Math.max(0, Math.round(cy - radius))
-      const x1 = Math.min(this.imgW, Math.round(cx + radius))
-      const y1 = Math.min(this.imgH, Math.round(cy + radius))
-
-      let sumX = 0
-      let sumY = 0
-      let count = 0
-      let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0
-
+    for (const t of this.table) {
+      if (t.missMs > this.config.maxMissingMs) continue
+      const x0 = Math.max(0, Math.round(t.cx - r))
+      const y0 = Math.max(0, Math.round(t.cy - r))
+      const x1 = Math.min(this.imgW, Math.round(t.cx + r))
+      const y1 = Math.min(this.imgH, Math.round(t.cy + r))
       for (let y = y0; y < y1; y++) {
         for (let x = x0; x < x1; x++) {
-          if (examined) {
-            const gx = Math.floor(x / this.config.gridSize)
-            const gy = Math.floor(y / this.config.gridSize)
-            examined.add(gy * Math.floor(this.imgW / this.config.gridSize) + gx)
-          }
-          if (this.binary[y * this.imgW + x]) {
-            sumX += x
-            sumY += y
-            count++
-            if (x < minX) minX = x
-            if (y < minY) minY = y
-            if (x > maxX) maxX = x
-            if (y > maxY) maxY = y
-          }
+          covered[y * this.imgW + x] = 1
         }
-      }
-
-      if (count < this.config.minWindowPixels) return null
-
-      if (expectedArea && expectedArea > 0 && count > this.config.maxArea) {
-        radius = Math.round(radius * Math.sqrt(this.config.maxArea / count))
-        continue
-      }
-
-      return {
-        cx: Math.round(sumX / count),
-        cy: Math.round(sumY / count),
-        area: count,
-        bbox: [minX, minY, maxX + 1, maxY + 1],
       }
     }
 
-    return null
-  }
+    const visited = new Uint8Array(this.imgW * this.imgH)
 
-  private scanUnexamined(now: number, examined: Set<number>) {
-    if (!this.binary) return
-    const gs = this.config.gridSize
-    const cellsX = Math.floor(this.imgW / gs)
-    const cellsY = Math.floor(this.imgH / gs)
+    for (let y = 0; y < this.imgH; y++) {
+      for (let x = 0; x < this.imgW; x++) {
+        const px = y * this.imgW + x
+        if (covered[px] || visited[px] || !this.binary[px]) continue
 
-    const cells: { gx: number; gy: number; cx: number; cy: number; count: number }[] = []
-
-    for (let gy = 0; gy < cellsY; gy++) {
-      for (let gx = 0; gx < cellsX; gx++) {
-        if (examined.has(gy * cellsX + gx)) continue
-        let count = 0
-        let sumX = 0
-        let sumY = 0
-        for (let dy = 0; dy < gs; dy++) {
-          for (let dx = 0; dx < gs; dx++) {
-            const px = gx * gs + dx
-            const py = gy * gs + dy
-            if (px < this.imgW && py < this.imgH && this.binary[py * this.imgW + px]) {
-              count++
-              sumX += px
-              sumY += py
-            }
-          }
-        }
-        if (count > 0) cells.push({ gx, gy, cx: sumX / count, cy: sumY / count, count })
-      }
-    }
-
-    if (cells.length === 0) return
-
-    const visited = new Set<number>()
-    const newBlobs: { cx: number; cy: number; area: number }[] = []
-
-    for (let i = 0; i < cells.length; i++) {
-      if (visited.has(i)) continue
-      visited.add(i)
-      const cluster = [cells[i]]
-      const queue = [i]
-
-      while (queue.length > 0) {
-        const cur = queue.shift()!
-        for (let j = 0; j < cells.length; j++) {
-          if (visited.has(j)) continue
-          const dx = Math.abs(cells[cur].cx - cells[j].cx)
-          const dy = Math.abs(cells[cur].cy - cells[j].cy)
-          if (dx < gs * 1.5 && dy < gs * 1.5) {
-            visited.add(j)
-            cluster.push(cells[j])
-            queue.push(j)
-          }
+        const blob = this.floodFillFull(x, y, visited)
+        if (blob && blob.area >= this.config.minArea && blob.area <= this.config.maxArea) {
+          this.insertEntry(blob, now)
         }
       }
-
-      let totalWeight = 0
-      let cx = 0
-      let cy = 0
-      for (const cell of cluster) {
-        cx += cell.cx * cell.count
-        cy += cell.cy * cell.count
-        totalWeight += cell.count
-      }
-
-      if (totalWeight >= this.config.minWindowPixels) {
-        newBlobs.push({ cx: Math.round(cx / totalWeight), cy: Math.round(cy / totalWeight), area: totalWeight })
-      }
-    }
-
-    for (const b of newBlobs) {
-      this.tracked.push({
-        internalId: this.nextId++,
-        displayId: null,
-        cx: b.cx,
-        cy: b.cy,
-        vx: 0,
-        vy: 0,
-        area: b.area,
-        bbox: [b.cx - 4, b.cy - 4, b.cx + 4, b.cy + 4],
-        lastSeen: now,
-        born: now,
-        framesSeen: 1,
-        residualSpeed: 0,
-        lowResidualFrames: 0,
-        avgArea: b.area,
-        avgAspect: 1,
-      })
     }
   }
 
-  private updateResidualSpeeds(dm: { dx: number; dy: number }) {
-    const dt = Math.max(0.001, 1 / 24)
-    const bgVx = dm.dx / dt
-    const bgVy = dm.dy / dt
-    for (const t of this.tracked) {
+  private classify() {
+    const noise = this.table.filter(t => t.displayId === null && t.framesSeen > 1)
+    let bgVx = 0, bgVy = 0
+
+    if (noise.length > 0) {
+      const vxs = noise.map(t => t.vx).sort((a, b) => a - b)
+      const vys = noise.map(t => t.vy).sort((a, b) => a - b)
+      bgVx = vxs[Math.floor(vxs.length / 2)]
+      bgVy = vys[Math.floor(vys.length / 2)]
+    }
+
+    for (const t of this.table) {
       const rvx = t.vx - bgVx
       const rvy = t.vy - bgVy
       t.residualSpeed = Math.sqrt(rvx * rvx + rvy * rvy)
+      t.lowResidualFrames = t.residualSpeed > this.config.residualThreshold ? 0 : t.lowResidualFrames + 1
     }
-  }
 
-  private demoteTargets(targets: TrackedBlob[]) {
-    for (const t of targets) {
-      if (t.displayId !== null && t.lowResidualFrames >= this.config.demotionFrames) {
-        if (t.displayId !== -1) this.releaseDisplayId(t.displayId)
+    for (const t of this.table) {
+      if (t.displayId === null) continue
+      if (t.lowResidualFrames >= this.config.demotionFrames
+        || t.highJerkFrames >= this.config.jerkDemotionFrames) {
+        this.releaseDisplayId(t.displayId)
         t.displayId = null
         t.lowResidualFrames = 0
+        t.highJerkFrames = 0
       }
+    }
+
+    const speed = (t: TrackedBlob) => Math.sqrt(t.vx * t.vx + t.vy * t.vy)
+    const candidates = this.table
+      .filter(t =>
+        t.displayId === null
+        && t.framesSeen >= this.config.confirmationFrames
+        && speed(t) > this.config.residualThreshold
+        && t.highJerkFrames < this.config.jerkDemotionFrames
+      )
+      .sort((a, b) => speed(b) - speed(a))
+
+    for (const t of candidates) {
+      if (this.activeDisplayIds.size >= this.displayPool.length) break
+      t.displayId = this.allocateDisplayId()
     }
   }
 
-  private confirmBlobs() {
-    for (const t of this.tracked) {
-      if (t.displayId === null && t.framesSeen >= this.config.confirmationFrames && t.residualSpeed > this.config.residualThreshold) {
-        t.displayId = this.allocateDisplayId()
-      }
-    }
-  }
-
-  private expireBlobs(now: number) {
-    this.tracked = this.tracked.filter(t => {
-      const missingMs = now - t.lastSeen
+  private expire() {
+    this.table = this.table.filter(t => {
       const maxMs = t.displayId !== null ? this.config.maxMissingMs * 2 : this.config.maxMissingMs
-      if (missingMs > maxMs) {
+      if (t.missMs > maxMs) {
         if (t.displayId !== null) this.releaseDisplayId(t.displayId)
         return false
       }
       return true
     })
+  }
+
+  private searchAround(
+    cx: number, cy: number, radius: number
+  ): { cx: number; cy: number; area: number; bbox: [number, number, number, number] } | null {
+    if (!this.binary) return null
+
+    const x0 = Math.max(0, Math.round(cx - radius))
+    const y0 = Math.max(0, Math.round(cy - radius))
+    const x1 = Math.min(this.imgW, Math.round(cx + radius))
+    const y1 = Math.min(this.imgH, Math.round(cy + radius))
+
+    let bestDist = Infinity
+    let seedX = -1, seedY = -1
+
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        if (this.binary[y * this.imgW + x]) {
+          const d = (x - cx) ** 2 + (y - cy) ** 2
+          if (d < bestDist) {
+            bestDist = d
+            seedX = x
+            seedY = y
+          }
+        }
+      }
+    }
+
+    if (seedX < 0) return null
+
+    const visited = new Set<number>()
+    const startPx = seedY * this.imgW + seedX
+    visited.add(startPx)
+
+    const queue = [startPx]
+    let sumX = 0, sumY = 0, count = 0
+    let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0
+
+    while (queue.length > 0) {
+      const px = queue.shift()!
+      const x = px % this.imgW
+      const y = (px - x) / this.imgW
+
+      sumX += x
+      sumY += y
+      count++
+      if (x < minX) minX = x
+      if (y < minY) minY = y
+      if (x > maxX) maxX = x
+      if (y > maxY) maxY = y
+
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < x0 || nx >= x1 || ny < y0 || ny >= y1) continue
+          const npx = ny * this.imgW + nx
+          if (visited.has(npx) || !this.binary[npx]) continue
+          visited.add(npx)
+          queue.push(npx)
+        }
+      }
+    }
+
+    if (count < this.config.minArea) return null
+
+    return {
+      cx: Math.round(sumX / count),
+      cy: Math.round(sumY / count),
+      area: count,
+      bbox: [minX, minY, maxX + 1, maxY + 1],
+    }
+  }
+
+  private floodFillFull(
+    startX: number, startY: number, visited: Uint8Array
+  ): { cx: number; cy: number; area: number; bbox: [number, number, number, number] } | null {
+    const startPx = startY * this.imgW + startX
+    visited[startPx] = 1
+
+    const queue = [startPx]
+    let sumX = 0, sumY = 0, count = 0
+    let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0
+
+    while (queue.length > 0) {
+      const px = queue.shift()!
+      const x = px % this.imgW
+      const y = (px - x) / this.imgW
+
+      sumX += x
+      sumY += y
+      count++
+      if (x < minX) minX = x
+      if (y < minY) minY = y
+      if (x > maxX) maxX = x
+      if (y > maxY) maxY = y
+
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue
+          const nx = x + dx
+          const ny = y + dy
+          if (nx < 0 || nx >= this.imgW || ny < 0 || ny >= this.imgH) continue
+          const npx = ny * this.imgW + nx
+          if (visited[npx] || !this.binary![npx]) continue
+          visited[npx] = 1
+          queue.push(npx)
+        }
+      }
+    }
+
+    if (count === 0) return null
+
+    return {
+      cx: Math.round(sumX / count),
+      cy: Math.round(sumY / count),
+      area: count,
+      bbox: [minX, minY, maxX + 1, maxY + 1],
+    }
+  }
+
+  private insertEntry(
+    blob: { cx: number; cy: number; area: number; bbox: [number, number, number, number] },
+    now: number
+  ) {
+    this.table.push({
+      internalId: this.nextId++,
+      displayId: null,
+      cx: blob.cx,
+      cy: blob.cy,
+      vx: 0,
+      vy: 0,
+      area: blob.area,
+      bbox: blob.bbox,
+      lastSeen: now,
+      born: now,
+      framesSeen: 1,
+      missMs: 0,
+      residualSpeed: 0,
+      lowResidualFrames: 0,
+      highJerkFrames: 0,
+      avgArea: blob.area,
+    })
+  }
+
+  private initialScan(now: number) {
+    if (!this.binary) return
+    const visited = new Uint8Array(this.imgW * this.imgH)
+
+    for (let y = 0; y < this.imgH; y++) {
+      for (let x = 0; x < this.imgW; x++) {
+        const px = y * this.imgW + x
+        if (visited[px] || !this.binary[px]) continue
+
+        const blob = this.floodFillFull(x, y, visited)
+        if (blob && blob.area >= this.config.minArea && blob.area <= this.config.maxArea) {
+          this.insertEntry(blob, now)
+        }
+      }
+    }
   }
 
   private allocateDisplayId(): number {
