@@ -1,6 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import * as THREE from 'three'
 import { useCamFrameStore } from '../store/camFrameStore'
+import { useGameStore } from '../store/gameStore'
 
 interface Props {
   frames: Record<string, THREE.WebGLRenderTarget> | null
@@ -88,7 +89,7 @@ export default function CamLayout({ frames, renderer, onMainChange }: Props) {
     let running = true
     const loop = () => {
       if (running) {
-        drawFeeds()
+        if (useGameStore.getState().phase === 'playing') drawFeeds()
         requestAnimationFrame(loop)
       }
     }

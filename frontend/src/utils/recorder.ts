@@ -2,6 +2,7 @@ import { TrackedBlob } from './blobTracker'
 
 interface RecordedFrame {
   time: number
+  xorImage: ImageData
   tracked: TrackedBlob[]
 }
 
@@ -23,14 +24,23 @@ export function startRecording(params: Recording['params']) {
 }
 
 export function recordFrame(
-  _pixels: Uint8Array, _w: number, _h: number,
+  pixels: Uint8Array, w: number, h: number,
   tracked: TrackedBlob[]
 ) {
   if (!recording) return
   if (recording.frames.length >= 100) return
 
+  const imageData = new ImageData(w, h)
+  for (let i = 0; i < w * h; i++) {
+    imageData.data[i * 4] = pixels[i * 4]
+    imageData.data[i * 4 + 1] = pixels[i * 4 + 1]
+    imageData.data[i * 4 + 2] = pixels[i * 4 + 2]
+    imageData.data[i * 4 + 3] = 255
+  }
+
   recording.frames.push({
     time: performance.now(),
+    xorImage: imageData,
     tracked: tracked.map(t => ({ ...t })),
   })
 }

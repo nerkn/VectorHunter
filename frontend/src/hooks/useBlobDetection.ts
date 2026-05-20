@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { thresholdImage } from '../utils/blobDetector'
 import { BlobTracker } from '../utils/blobTracker'
 import { useDetectionStore } from '../store/detectionStore'
+import { useGameStore } from '../store/gameStore'
 import { useCamFrameStore } from '../store/camFrameStore'
 import { recordFrame } from '../utils/recorder'
 
@@ -19,6 +20,9 @@ export function useBlobDetection() {
     const loop = (now: number) => {
       rafId = requestAnimationFrame(loop)
 
+      if (useDetectionStore.getState().playback) return
+      if (useGameStore.getState().phase !== 'playing') return
+
       const { detectionFps, threshold, minArea, maxArea } = useDetectionStore.getState()
       const interval = detectionFps > 0 ? 1000 / detectionFps : 1000
       if (now - lastRun < interval) return
@@ -28,7 +32,7 @@ export function useBlobDetection() {
       if (!frameData) return
 
       const binary = thresholdImage(frameData.pixels, frameData.w, frameData.h, threshold)
-      tracker.setBinaryImage(binary, frameData.w, frameData.h)
+      tracker.setBinaryImage(binary, frameData.w, frameData.h, frameData.pixels)
       tracker.setAreaRange(minArea, maxArea)
       const tracked = tracker.update()
 

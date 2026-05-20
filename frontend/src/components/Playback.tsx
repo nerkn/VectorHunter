@@ -1,5 +1,30 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { Recording } from '../utils/recorder'
+
+const HEX = '0123456789ABCDEF'
+
+function extractBlobHex(imageData: ImageData, bbox: [number, number, number, number]): string {
+  const pad = 2
+  const [bx, by, bx2, by2] = bbox
+  const w = imageData.width
+  const h = imageData.height
+  const d = imageData.data
+  const x0 = Math.max(0, bx - pad)
+  const y0 = Math.max(0, by - pad)
+  const x1 = Math.min(w, bx2 + pad)
+  const y1 = Math.min(h, by2 + pad)
+  const lines: string[] = []
+  for (let y = y0; y < y1; y++) {
+    let row = ''
+    for (let x = x0; x < x1; x++) {
+      const idx = (y * w + x) * 4
+      const brightness = Math.max(d[idx], d[idx + 1], d[idx + 2])
+      row += HEX[Math.min(15, brightness >> 4)]
+    }
+    lines.push(row)
+  }
+  return lines.join('\n')
+}
 
 function exportRecording(rec: Recording) {
   const json = {
@@ -18,6 +43,7 @@ function exportRecording(rec: Recording) {
         missMs: Math.round(t.missMs),
         residualSpeed: Math.round(t.residualSpeed),
         highJerkFrames: t.highJerkFrames,
+        blobHex: extractBlobHex(f.xorImage, t.bbox),
       })),
     })),
   }
@@ -38,9 +64,53 @@ interface Props {
 
 export default function Playback({ recording, onClose }: Props) {
   const [frameIdx, setFrameIdx] = useState(0)
-  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const total = recording.frames.length
   const frame = recording.frames[frameIdx]
+
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') setFrameIdx(i => Math.max(0, i - 1))
+      if (e.key === 'ArrowRight') setFrameIdx(i => Math.min(total - 1, i + 1))
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', handleKey)
+    return () => window.removeEventListener('keydown', handleKey)
+  }, [total, onClose])
+
+  useEffect(() => {
+    if (!canvasRef.current || !frame) return
+    const ctx = canvasRef.current.getContext('2d')
+    if (!ctx) return
+    ctx.putImageData(frame.xorImage, 0, 0)
+
+    for (const t of frame.tracked) {
+      const isTarget = t.displayId !== null
+      const color = isTarget ? '#ffff00' : '#ffffff44'
+      ctx.strokeStyle = color
+      ctx.strokeRect(t.bbox[0], t.bbox[1], t.bbox[2] - t.bbox[0], t.bbox[3] - t.bbox[1])
+
+      if (isTarget) {
+        ctx.fillStyle = '#ffff00'
+        ctx.font = '12px monospace'
+        ctx.fillText(`T${t.displayId}`, t.cx + 4, t.cy - 4)
+
+        const dt = 0.15
+        const px = t.cx + t.vx * dt
+        const py = t.cy + t.vy * dt
+        ctx.beginPath()
+        ctx.moveTo(t.cx, t.cy)
+        ctx.lineTo(px, py)
+        ctx.strokeStyle = '#ffff0088'
+        ctx.stroke()
+      } else {
+        ctx.fillStyle = '#ffffff44'
+        ctx.beginPath()
+        ctx.arc(t.cx, t.cy, 2, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
+  }, [frame, frameIdx])
 
   return (
     <div style={{
@@ -54,8 +124,14 @@ export default function Playback({ recording, onClose }: Props) {
         PARAMS: min={recording.params.minArea} max={recording.params.maxArea} thr={recording.params.threshold} grid={recording.params.gridSize} fps={recording.params.detectionFps}
       </div>
 
+      <canvas
+        ref={canvasRef}
+        width={frame?.xorImage.width ?? 640}
+        height={frame?.xorImage.height ?? 480}
+        style={{ border: '1px solid #0f04', imageRendering: 'pixelated', cursor: 'crosshair' }}
+      />
+
       <div style={{ marginTop: 8, display: 'flex', gap: 12, alignItems: 'center' }}>
-        {mousePos && <div style={{ fontSize: 11, color: '#0f08', marginTop: 2 }}>{mousePos.x}, {mousePos.y}</div>}
         <button onClick={() => setFrameIdx(Math.max(0, frameIdx - 1))} style={btnStyle}>◀</button>
         <span style={{ fontSize: 12 }}>{frameIdx + 1} / {total}</span>
         <button onClick={() => setFrameIdx(Math.min(total - 1, frameIdx + 1))} style={btnStyle}>▶</button>
