@@ -23,10 +23,10 @@ interface DetectionState {
 
 export const useDetectionStore = create<DetectionState>((set) => ({
   tracked: [],
-  threshold: 30,
-  minArea: 5,
-  maxArea: 128,
-  detectionFps: 8,
+  threshold: 25,
+  minArea: 4,
+  maxArea: 256,
+  detectionFps: 16,
   lockedTarget: null,
   tracker: null,
   playback: null,

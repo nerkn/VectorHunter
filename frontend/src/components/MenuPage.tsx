@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import { useGameStore, TargetConfig } from '../store/gameStore'
 
 const MOTIONS: TargetConfig['motion'][] = ['circle', 'figure8', 'line']

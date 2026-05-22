@@ -132,7 +132,7 @@ export default function HUD() {
             <div>X {(t.position[0]).toFixed(1)}km/h</div>
             <div>Y {(t.position[1]).toFixed(1)}km/h</div>
             <div>Z {(t.position[2]).toFixed(1)}km/h</div>
-            <div>SPD {(t.speed * 3.6).toFixed(1)}km/h</div>
+            <div>SPD {(t.speed).toFixed(1)}m/s</div>
             <div>ALT {t.altitude.toFixed(1)}m</div>
           </div>
         ))}

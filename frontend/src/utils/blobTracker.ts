@@ -34,11 +34,11 @@ interface TrackerConfig {
 const DEFAULT_CONFIG: TrackerConfig = {
   searchRadius: 30,
   minArea: 4,
-  maxArea: 128,
+  maxArea: 256,
   confirmationFrames: 3,
   demotionFrames: 15,
-  jerkDemotionFrames: 5,
-  jerkThreshold: 60,
+  jerkDemotionFrames: 10,
+  jerkThreshold: 120,
   residualThreshold: 8,
   velocitySmoothing: 0.5,
   maxMissingMs: 600,
@@ -239,8 +239,9 @@ export class BlobTracker {
 
     for (const t of this.table) {
       if (t.displayId === null) continue
+      const jerkLimit = t.area < 10 ? this.config.jerkDemotionFrames * 3 : this.config.jerkDemotionFrames
       if (t.lowResidualFrames >= this.config.demotionFrames
-        || t.highJerkFrames >= this.config.jerkDemotionFrames) {
+        || t.highJerkFrames >= jerkLimit) {
         this.releaseDisplayId(t.displayId)
         t.displayId = null
         t.lowResidualFrames = 0
@@ -250,12 +251,14 @@ export class BlobTracker {
 
     const speed = (t: TrackedBlob) => Math.sqrt(t.vx * t.vx + t.vy * t.vy)
     const candidates = this.table
-      .filter(t =>
-        t.displayId === null
-        && t.framesSeen >= this.config.confirmationFrames
-        && speed(t) > this.config.residualThreshold
-        && t.highJerkFrames < this.config.jerkDemotionFrames
-      )
+      .filter(t => {
+        if (t.displayId !== null) return false
+        if (t.framesSeen < this.config.confirmationFrames) return false
+        if (speed(t) <= this.config.residualThreshold) return false
+        const jerkLimit = t.area < 10 ? this.config.jerkDemotionFrames * 3 : this.config.jerkDemotionFrames
+        if (t.highJerkFrames >= jerkLimit) return false
+        return true
+      })
       .sort((a, b) => speed(b) - speed(a))
 
     for (const t of candidates) {

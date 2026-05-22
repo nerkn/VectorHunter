@@ -29,11 +29,18 @@ export default function Scene({ onFrames, paused }: { onFrames: (frames: Record<
   const startTime = useRef(0)
   const initialized = useRef(false)
 
+  const gameTargetIds = useGameStore(s => s.targets.map(t => t.id + ':' + t.motion + ':' + t.speed).join(','))
+  const gamePhase = useGameStore(s => s.phase)
+
   useEffect(() => {
-    useTargetStore.getState().initFromConfig(gameTargets)
-    startTime.current = performance.now() / 1000
-    initialized.current = true
-  }, [gameTargets])
+    if (gamePhase === 'playing') {
+      const configs = useGameStore.getState().targets
+      if (configs.length === 0) return
+      useTargetStore.getState().initFromConfig(configs)
+      startTime.current = performance.now() / 1000
+      initialized.current = true
+    }
+  }, [gameTargetIds, gamePhase])
 
   useFrame((_, dt) => {
     if (!initialized.current || paused) return
@@ -68,8 +75,8 @@ export default function Scene({ onFrames, paused }: { onFrames: (frames: Record<
       <DroneModel />
       <FollowCamera />
 
-      <OnboardCamera offset={[-0.15, -0.05, -0.6]} renderTarget={leftRT} />
-      <OnboardCamera offset={[0.15, -0.05, -0.6]} renderTarget={rightRT} />
+      <OnboardCamera offset={[-0.25, -0.05, -0.6]} renderTarget={leftRT} />
+      <OnboardCamera offset={[0.25, -0.05, -0.6]} renderTarget={rightRT} />
 
       {targets.filter(t => t.active).map((t, i) => {
         const config = gameTargets.find(g => g.id === t.id)

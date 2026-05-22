@@ -6,7 +6,7 @@ export interface TargetConfig {
   id: string
   type: string
   motion: 'circle' | 'figure8' | 'line'
-  speed: number
+  speed: number  // m/s
   jitter: number
   appearanceDelay: number
 }
@@ -27,9 +27,9 @@ export const useGameStore = create<GameState>((set) => ({
   phase: 'menu',
   sceneName: 'openfield',
   targets: [
-    { id: 'alpha', type: 'drone', motion: 'circle', speed: 40, jitter: 0, appearanceDelay: 0 },
-    { id: 'bravo', type: 'drone', motion: 'figure8', speed: 30, jitter: 0, appearanceDelay: 0 },
-    { id: 'charlie', type: 'drone', motion: 'line', speed: 100, jitter: 0, appearanceDelay: 3 },
+    { id: 'alpha', type: 'drone', motion: 'circle', speed: 11, jitter: 0, appearanceDelay: 0 },
+    { id: 'bravo', type: 'drone', motion: 'figure8', speed: 8, jitter: 0, appearanceDelay: 0 },
+    { id: 'charlie', type: 'drone', motion: 'line', speed: 11, jitter: 0, appearanceDelay: 3 },
   ],
   setPhase: (phase) => set({ phase }),
   setScene: (name) => set({ sceneName: name }),
