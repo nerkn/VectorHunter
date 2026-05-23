@@ -1,3 +1,5 @@
+export type PatchMethod = 'ncc' | 'xor'
+
 export interface TrackedBlob {
   internalId: number
   displayId: number | null
@@ -15,6 +17,10 @@ export interface TrackedBlob {
   lowResidualFrames: number
   highJerkFrames: number
   avgArea: number
+  patch: Uint8Array | null
+  patchW: number
+  patchH: number
+  patternScore: number
 }
 
 interface TrackerConfig {
@@ -107,14 +113,132 @@ export class BlobTracker {
     this.displayPool = [1, 2, 3, 4, 5, 6, 7, 8, 9]
   }
 
+  private extractGrayRect(x0: number, y0: number, w: number, h: number): Uint8Array {
+    const patch = new Uint8Array(w * h)
+    let idx = 0
+    for (let dy = 0; dy < h; dy++) {
+      for (let dx = 0; dx < w; dx++) {
+        const x = x0 + dx
+        const y = y0 + dy
+        if (x >= 0 && x < this.imgW && y >= 0 && y < this.imgH && this.rawPixels) {
+          const i = (y * this.imgW + x) * 4
+          patch[idx++] = (this.rawPixels[i] + this.rawPixels[i + 1] + this.rawPixels[i + 2]) / 3
+        } else {
+          patch[idx++] = 0
+        }
+      }
+    }
+    return patch
+  }
+
+  private computeAreaFromBinary(cx: number, cy: number, halfW: number, halfH: number): { area: number; bbox: [number, number, number, number] } {
+    let count = 0
+    let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0
+    for (let dy = -halfH; dy < halfH; dy++) {
+      for (let dx = -halfW; dx < halfW; dx++) {
+        const x = Math.round(cx) + dx
+        const y = Math.round(cy) + dy
+        if (x >= 0 && x < this.imgW && y >= 0 && y < this.imgH && this.binary) {
+          if (this.binary[y * this.imgW + x]) {
+            count++
+            if (x < minX) minX = x
+            if (y < minY) minY = y
+            if (x > maxX) maxX = x
+            if (y > maxY) maxY = y
+          }
+        }
+      }
+    }
+    return { area: count, bbox: [minX, minY, maxX + 1, maxY + 1] as [number, number, number, number] }
+  }
+
+  private scoreNCC(patch1: Uint8Array, patch2: Uint8Array): number {
+    const len = Math.min(patch1.length, patch2.length)
+    if (len === 0) return 0
+
+    let sum1 = 0, sum2 = 0, sum12 = 0
+    let sqSum1 = 0, sqSum2 = 0
+
+    for (let i = 0; i < len; i++) {
+      sum1 += patch1[i]
+      sum2 += patch2[i]
+      sum12 += patch1[i] * patch2[i]
+      sqSum1 += patch1[i] * patch1[i]
+      sqSum2 += patch2[i] * patch2[i]
+    }
+
+    const n = len
+    const num = n * sum12 - sum1 * sum2
+    const den = Math.sqrt((n * sqSum1 - sum1 * sum1) * (n * sqSum2 - sum2 * sum2))
+
+    return den === 0 ? 0 : num / den
+  }
+
+  private matchByNCC(
+    predCx: number, predCy: number, searchRadius: number,
+    storedPatch: Uint8Array, patchHalf: number
+  ): { cx: number; cy: number; area: number; bbox: [number, number, number, number]; patch: Uint8Array; score: number } | null {
+    const winHalf = patchHalf + searchRadius
+    const x0 = Math.max(0, Math.round(predCx - winHalf))
+    const y0 = Math.max(0, Math.round(predCy - winHalf))
+    const x1 = Math.min(this.imgW, Math.round(predCx + winHalf))
+    const y1 = Math.min(this.imgH, Math.round(predCy + winHalf))
+
+    const patchW = patchHalf * 2
+    let bestScore = -Infinity
+    let bestCx = -1, bestCy = -1
+
+    for (let cy = y0 + patchHalf; cy < y1 - patchHalf; cy++) {
+      for (let cx = x0 + patchHalf; cx < x1 - patchHalf; cx++) {
+        const dx = cx - predCx, dy = cy - predCy
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist > searchRadius) continue
+
+        const candidate = this.extractGrayPatch(cx, cy, patchHalf)
+        const ncc = this.scoreNCC(storedPatch, candidate)
+        const distPenalty = dist * 0.01
+        const score = ncc - distPenalty
+
+        if (score > bestScore) {
+          bestScore = score
+          bestCx = cx
+          bestCy = cy
+        }
+      }
+    }
+
+    if (bestCx < 0 || bestScore < 0.1) return null
+
+    const areaHalf = Math.max(patchHalf, Math.ceil(Math.sqrt(this.config.maxArea) / 2))
+    const { area, bbox } = this.computeAreaFromBinary(bestCx, bestCy, areaHalf)
+    const newPatch = this.extractGrayPatch(bestCx, bestCy, patchHalf)
+
+    return { cx: bestCx, cy: bestCy, area, bbox, patch: newPatch, score: bestScore }
+  }
+
   private verify(now: number, dt: number) {
+
     for (const t of this.table) {
       const predCx = t.cx + t.vx * dt
       const predCy = t.cy + t.vy * dt
-      let found = this.searchAround(predCx, predCy, this.config.searchRadius)
+
+      let found: { cx: number; cy: number; area: number; bbox: [number, number, number, number]; patch?: Uint8Array; score?: number } | null = null
+
+      if (t.patch && t.displayId !== null) {
+        const patchHalf = Math.ceil(Math.sqrt(t.avgArea) / 2)
+        found = this.matchByNCC(predCx, predCy, this.config.searchRadius, t.patch, patchHalf)
+      }
+
+      if (!found) {
+        found = this.searchAround(predCx, predCy, this.config.searchRadius)
+      }
 
       if (!found && t.displayId !== null && this.rawPixels) {
-        found = this.searchAroundRaw(predCx, predCy, this.config.searchRadius, 10)
+        const rawFound = this.searchAroundRaw(predCx, predCy, this.config.searchRadius, 10)
+        if (rawFound) {
+          const patchHalf = Math.ceil(Math.sqrt(rawFound.area) / 2)
+          found = { ...rawFound, patch: this.extractGrayPatch(rawFound.cx, rawFound.cy, patchHalf) }
+        }
       }
 
       if (found) {
@@ -136,6 +260,15 @@ export class BlobTracker {
         t.framesSeen++
         t.lastSeen = now
         t.highJerkFrames = jerk > this.config.jerkThreshold ? t.highJerkFrames + 1 : 0
+
+        if (found.patch) {
+          t.patch = found.patch
+          t.patternScore = found.score ?? 0
+        } else {
+          const patchHalf = Math.ceil(Math.sqrt(t.avgArea) / 2)
+          t.patch = this.extractGrayPatch(t.cx, t.cy, patchHalf)
+          t.patternScore = 1
+        }
       } else {
         t.cx = predCx
         t.cy = predCy
@@ -207,6 +340,7 @@ export class BlobTracker {
             t.missMs = 0
             t.framesSeen++
             t.lastSeen = now
+            t.patch = this.extractGrayPatch(blob.cx, blob.cy, Math.ceil(Math.sqrt(blob.area) / 2))
             adopted = true
             break
           }
@@ -480,6 +614,8 @@ export class BlobTracker {
     blob: { cx: number; cy: number; area: number; bbox: [number, number, number, number] },
     now: number
   ) {
+    const patchHalf = Math.ceil(Math.sqrt(blob.area) / 2)
+    const patch = this.extractGrayPatch(blob.cx, blob.cy, patchHalf)
     this.table.push({
       internalId: this.nextId++,
       displayId: null,
@@ -497,6 +633,8 @@ export class BlobTracker {
       lowResidualFrames: 0,
       highJerkFrames: 0,
       avgArea: blob.area,
+      patch,
+      patternScore: 1,
     })
   }
 

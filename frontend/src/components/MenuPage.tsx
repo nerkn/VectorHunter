@@ -14,14 +14,14 @@ function TargetRow({ target, index, onChange, onRemove }: {
         T{index + 1}
       </span>
 
-      <select value={target.motion} onChange={e => onChange(index, { ...target, motion: e.target.value as TargetConfig['motion'] })}
+      <select value={target.motion} onChange={e => onChange(index, { ...target, motion: e.target.value as TargetConfig['motion'], appearanceDelay: 0 })}
         style={selectStyle}>
         {MOTIONS.map(m => <option key={m} value={m}>{m}</option>)}
       </select>
 
       <input type="number" value={target.speed} onChange={e => onChange(index, { ...target, speed: Number(e.target.value) })}
-        style={inputStyle} title="Speed km/h" />
-      <span style={labelStyle}>km/h</span>
+        style={inputStyle} title="Speed m/s" />
+      <span style={labelStyle}>m/s</span>
 
       <input type="number" value={target.appearanceDelay} onChange={e => onChange(index, { ...target, appearanceDelay: Number(e.target.value) })}
         style={{ ...inputStyle, width: 40 }} title="Appearance delay (sec)" />
@@ -54,7 +54,7 @@ export default function MenuPage() {
       id: `t${Date.now()}`,
       type: 'drone',
       motion: 'circle',
-      speed: 40,
+      speed: 11,
       jitter: 0,
       appearanceDelay: 0,
     }])

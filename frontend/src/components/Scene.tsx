@@ -4,6 +4,7 @@ import { Sky } from '@react-three/drei'
 import * as THREE from 'three'
 import { useDroneStore } from '../store/droneStore'
 import { useTargetStore } from '../store/targetStore'
+import { useDetectionStore } from '../store/detectionStore'
 import { useGameStore } from '../store/gameStore'
 import { getTerrainHeight } from '../utils/terrain'
 import Terrain from './Terrain'
@@ -44,8 +45,8 @@ export default function Scene({ onFrames, paused }: { onFrames: (frames: Record<
 
   useFrame((_, dt) => {
     if (!initialized.current || paused) return
-    const clampedDt = Math.min(dt, 0.05)
-    update(clampedDt)
+    const scaledDt = useDetectionStore.getState().slowMode ? 1 / 60 : Math.min(dt, 0.05)
+    update(scaledDt)
 
     const pos = useDroneStore.getState().position
     const groundY = getTerrainHeight(pos[0], pos[2]) + 1.5

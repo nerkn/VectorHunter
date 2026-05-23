@@ -6,6 +6,11 @@ import { useGameStore } from '../store/gameStore'
 import { useCamFrameStore } from '../store/camFrameStore'
 import { recordFrame } from '../utils/recorder'
 
+let debugMode = false
+export function setDebugMode(v: boolean) {
+  debugMode = v
+}
+
 export function useBlobDetection() {
   const trackerRef = useRef<BlobTracker | null>(null)
 
@@ -23,9 +28,10 @@ export function useBlobDetection() {
       if (useDetectionStore.getState().playback) return
       if (useGameStore.getState().phase !== 'playing') return
 
-      const { detectionFps, threshold, minArea, maxArea } = useDetectionStore.getState()
-      const interval = detectionFps > 0 ? 1000 / detectionFps : 1000
-      if (now - lastRun < interval) return
+      const { detectionFps, threshold, minArea, maxArea, slowMode } = useDetectionStore.getState()
+      const effectiveFps = slowMode ? 1 : detectionFps
+      const interval = debugMode ? 0 : (effectiveFps > 0 ? 1000 / effectiveFps : 1000)
+      if (!debugMode && !slowMode && now - lastRun < interval) return
       lastRun = now
 
       const frameData = useCamFrameStore.getState().xorFrame

@@ -14,15 +14,15 @@ interface DirectorState {
   update: () => void
 }
 
-const KP_YAW = 0.0005
-const KP_PITCH = 0.00005
-const MAX_YAW_DELTA = 0.04
-const MAX_PITCH_DELTA = 0.005
+const KP_YAW = 0.002
+const KP_PITCH = 0.0002
+const MAX_YAW_DELTA = 0.06
+const MAX_PITCH_DELTA = 0.01
 const PREDICT_DT = 0.15
-const SEARCH_DURATION = 2000
+const SEARCH_DURATION = 5000
 const IMAGE_CX = 320
 const IMAGE_CY = 240
-const DEFAULT_STANDOFF_AREA = 200
+const DEFAULT_STANDOFF_AREA = 100
 
 export const useFlightDirector = create<DirectorState>((set, get) => ({
   command: 'idle',
@@ -43,12 +43,17 @@ export const useFlightDirector = create<DirectorState>((set, get) => ({
     const { tracked, lockTarget } = useDetectionStore.getState()
     const target = tracked.find(t => t.displayId === targetDisplayId)
 
-    if (!target || (performance.now() - target.lastSeen) > 200) {
+    if (!target || (performance.now() - target.lastSeen) > 2000) {
       useDroneStore.getState().setInput('forward', false)
       useDroneStore.getState().setInput('boost', false)
       if (searchStartTime && performance.now() - searchStartTime > SEARCH_DURATION) {
         get().setCommand('idle', null)
         lockTarget(null)
+      } else if (!searchStartTime) {
+        set({ searchStartTime: performance.now() })
+      } else {
+        // keep flying forward while searching
+        useDroneStore.getState().setInput('forward', true)
       }
       return
     }

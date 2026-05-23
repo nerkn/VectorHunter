@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
+import './debug/debugApi'
 import Scene from './components/Scene'
 import CamLayout from './components/CamLayout'
 import HUD from './components/HUD'

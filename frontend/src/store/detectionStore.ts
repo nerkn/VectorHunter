@@ -1,6 +1,8 @@
 import { create } from 'zustand'
-import { TrackedBlob, BlobTracker } from '../utils/blobTracker'
+import { TrackedBlob, BlobTracker, PatchMethod } from '../utils/blobTracker'
 import { Recording } from '../utils/recorder'
+
+export type { PatchMethod }
 
 interface DetectionState {
   tracked: TrackedBlob[]
@@ -11,6 +13,8 @@ interface DetectionState {
   lockedTarget: number | null
   tracker: BlobTracker | null
   playback: Recording | null
+  patchMethod: PatchMethod
+  slowMode: boolean
   setDetectionResult: (tracked: TrackedBlob[]) => void
   setTracker: (tracker: BlobTracker) => void
   setPlayback: (rec: Recording | null) => void
@@ -19,6 +23,8 @@ interface DetectionState {
   setMaxArea: (val: number) => void
   setDetectionFps: (fps: number) => void
   lockTarget: (displayId: number | null) => void
+  setPatchMethod: (method: PatchMethod) => void
+  toggleSlowMode: () => void
 }
 
 export const useDetectionStore = create<DetectionState>((set) => ({
@@ -30,6 +36,8 @@ export const useDetectionStore = create<DetectionState>((set) => ({
   lockedTarget: null,
   tracker: null,
   playback: null,
+  patchMethod: 'xor',
+  slowMode: false,
   setPlayback: (rec) => set({ playback: rec }),
   setDetectionResult: (tracked) => set({ tracked }),
   setTracker: (tracker) => set({ tracker }),
@@ -38,4 +46,6 @@ export const useDetectionStore = create<DetectionState>((set) => ({
   setMaxArea: (val) => set({ maxArea: val }),
   setDetectionFps: (fps) => set({ detectionFps: fps }),
   lockTarget: (displayId) => set({ lockedTarget: displayId }),
+  setPatchMethod: (method) => set({ patchMethod: method }),
+  toggleSlowMode: () => set(s => ({ slowMode: !s.slowMode })),
 }))

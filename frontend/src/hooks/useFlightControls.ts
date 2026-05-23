@@ -80,6 +80,9 @@ export function useFlightControls() {
           if (rec) useDetectionStore.getState().setPlayback(rec)
         }
       }
+      if (e.code === 'KeyT') {
+        useDetectionStore.getState().toggleSlowMode()
+      }
     }
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -103,8 +106,12 @@ export function useFlightControls() {
     let last = performance.now()
     let animId = 0
     const tick = (now: number) => {
-      const dt = (now - last) / 1000
+      let dt = (now - last) / 1000
       last = now
+
+      if (useDetectionStore.getState().slowMode) {
+        dt = 1 / 60
+      }
 
       if (useGameStore.getState().phase !== 'playing') {
         animId = requestAnimationFrame(tick)

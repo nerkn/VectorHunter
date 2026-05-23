@@ -2,7 +2,7 @@ import { useTelemetryStore } from '../store/telemetryStore'
 import { useTargetStore } from '../store/targetStore'
 import { useDroneStore } from '../store/droneStore'
 import { isRecording } from '../utils/recorder'
-import { useDetectionStore } from '../store/detectionStore'
+import { useDetectionStore, PatchMethod } from '../store/detectionStore'
 
 export default function HUD() {
   const position = useDroneStore(s => s.position)
@@ -21,6 +21,10 @@ export default function HUD() {
   const setMaxArea = useDetectionStore(s => s.setMaxArea)
   const detectionFps = useDetectionStore(s => s.detectionFps)
   const setDetectionFps = useDetectionStore(s => s.setDetectionFps)
+  const patchMethod = useDetectionStore(s => s.patchMethod)
+  const setPatchMethod = useDetectionStore(s => s.setPatchMethod)
+  const slowMode = useDetectionStore(s => s.slowMode)
+  const toggleSlowMode = useDetectionStore(s => s.toggleSlowMode)
 
   const batteryColor = battery > 50 ? '#0f0' : battery > 20 ? '#fa0' : '#f00'
   const signalColor = signal > 60 ? '#0f0' : signal > 30 ? '#fa0' : '#f00'
@@ -82,6 +86,26 @@ export default function HUD() {
             ))}
           </span>
         </div>
+        <div
+          onClick={toggleSlowMode}
+          style={{ cursor: 'pointer', color: slowMode ? '#f00' : '#ff04', fontWeight: slowMode ? 'bold' : 'normal' }}
+        >SLOW <span style={{ float: 'right' }}>{slowMode ? '1 FPS' : 'OFF'}</span></div>
+        <div>
+          PATCH <span style={{ float: 'right' }}>
+            {(['ncc', 'xor'] as PatchMethod[]).map(v => (
+              <span
+                key={v}
+                onClick={() => setPatchMethod(v)}
+                style={{
+                  cursor: 'pointer', marginLeft: 5,
+                  color: patchMethod === v ? '#f00' : '#ff04',
+                  fontWeight: patchMethod === v ? 'bold' : 'normal',
+                  textTransform: 'uppercase',
+                }}
+              >{v}</span>
+            ))}
+          </span>
+        </div>
         <div>
           FPS <span style={{ float: 'right' }}>
             {[2, 4, 6, 8, 12, 16, 18, 20, 24].map(f => (
@@ -132,7 +156,7 @@ export default function HUD() {
             <div>X {(t.position[0]).toFixed(1)}km/h</div>
             <div>Y {(t.position[1]).toFixed(1)}km/h</div>
             <div>Z {(t.position[2]).toFixed(1)}km/h</div>
-            <div>SPD {(t.speed).toFixed(1)}m/s</div>
+            <div>SPD {(t.speed * 3.6).toFixed(1)}km/h</div>
             <div>ALT {t.altitude.toFixed(1)}m</div>
           </div>
         ))}

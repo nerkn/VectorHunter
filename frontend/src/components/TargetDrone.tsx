@@ -3,6 +3,7 @@ import { useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useTargetStore } from '../store/targetStore'
 import { useGameStore } from '../store/gameStore'
+import { useDetectionStore } from '../store/detectionStore'
 
 type Behavior = 'circle' | 'figure8' | 'line'
 
@@ -13,7 +14,7 @@ const rotorPositions: [number, number, number][] = [
 
 function Rotor({ position }: { position: [number, number, number] }) {
   const ref = useRef<THREE.Mesh>(null)
-  useFrame((_, dt) => { if (ref.current && useGameStore.getState().phase === 'playing') ref.current.rotation.y += dt * 40 })
+  useFrame((_, rawDt) => { if (ref.current && useGameStore.getState().phase === 'playing') ref.current.rotation.y += (useDetectionStore.getState().slowMode ? 1/60 : rawDt) * 40 })
   return (
     <mesh ref={ref} position={position}>
       <cylinderGeometry args={[0.3, 0.3, 0.02, 16]} />
@@ -30,9 +31,10 @@ interface Props {
   speed: number
 }
 
-const CIRCLE_TURN_RATE = 0.5
-const FIGURE8_TURN_PERIOD = 4
-const LINE_HALF_LENGTH = 60
+const CIRCLE_MAX_HEADING = Math.PI / 3  // 60°. Heading oscillates ±60° for figure8, stays <60° for circle
+const CIRCLE_TURN_RATE = 0.5         // rad/s. At 11 m/s → radius 22m, diameter 44m. At 40 m/s → radius 80m.
+const FIGURE8_HALF_PERIOD = 2.5 // seconds for one lobe (full cycle = 10s)
+const LINE_HALF_LENGTH = 120
 
 const _dir = new THREE.Vector3()
 const _vel = new THREE.Vector3()
@@ -44,10 +46,11 @@ const TargetDrone = forwardRef<THREE.Group, Props>(({ id, behavior, color, start
   const time = useRef(0)
   const initialized = useRef(false)
 
-  const speedMs = speed / 3.6
+  const speedMs = speed
 
-  useFrame((_, dt) => {
+  useFrame((_, rawDt) => {
     if (useGameStore.getState().phase !== 'playing') return
+    const dt = useDetectionStore.getState().slowMode ? 1 / 60 : rawDt
     const group = localRef.current
     if (!group) return
 
@@ -59,10 +62,17 @@ const TargetDrone = forwardRef<THREE.Group, Props>(({ id, behavior, color, start
     time.current += dt
 
     let turnRate = 0
+    let headingTarget = 0
     if (behavior === 'circle') {
+      // Constant-turn circle: heading increases at fixed rate.
+      // Speed = 11 m/s, turnRate = 0.5 → radius = 22m, circumference ≈ 138m, one lap ≈ 12.5s
       turnRate = CIRCLE_TURN_RATE
     } else if (behavior === 'figure8') {
-      turnRate = Math.sin(time.current * (2 * Math.PI / FIGURE8_TURN_PERIOD)) * CIRCLE_TURN_RATE * 2
+      // Figure8: heading oscillates ±60° creating left-right weaving
+      // This creates a figure8 pattern as the target weaves left and right
+      const omega = Math.PI / FIGURE8_HALF_PERIOD
+      heading.current = Math.sin(time.current * omega) * CIRCLE_MAX_HEADING
+      turnRate = 0
     } else {
       const dx = pos.current.x - startPosition[0]
       const dz = pos.current.z - startPosition[2]
