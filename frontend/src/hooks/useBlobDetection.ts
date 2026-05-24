@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { thresholdImage } from '../utils/blobDetector'
+import { thresholdImage, dilate } from '../utils/blobDetector'
 import { BlobTracker } from '../utils/blobTracker'
 import { useDetectionStore } from '../store/detectionStore'
 import { useGameStore } from '../store/gameStore'
@@ -37,10 +37,11 @@ export function useBlobDetection() {
       const frameData = useCamFrameStore.getState().xorFrame
       if (!frameData) return
 
-      const binary = thresholdImage(frameData.pixels, frameData.w, frameData.h, threshold)
+      const raw = thresholdImage(frameData.pixels, frameData.w, frameData.h, threshold)
+      const binary = dilate(raw, frameData.w, frameData.h, 1)
       tracker.setBinaryImage(binary, frameData.w, frameData.h, frameData.pixels)
       tracker.setAreaRange(minArea, maxArea)
-      const tracked = tracker.update()
+      const tracked = tracker.update(useDetectionStore.getState().patchMethod)
 
       recordFrame(frameData.pixels, frameData.w, frameData.h, tracked)
       useDetectionStore.getState().setDetectionResult(tracked)

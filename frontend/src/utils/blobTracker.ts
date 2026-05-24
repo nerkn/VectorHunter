@@ -79,7 +79,7 @@ export class BlobTracker {
     this.config.maxArea = max
   }
 
-  update(): TrackedBlob[] {
+  update(patchMethod: PatchMethod = 'ncc'): TrackedBlob[] {
     if (!this.binary) return this.table
     const now = performance.now()
     const dt = this.config.frameDt
@@ -89,7 +89,7 @@ export class BlobTracker {
       return this.table
     }
 
-    this.verify(now, dt)
+    this.verify(now, dt, patchMethod)
     this.deduplicate()
     this.detectNew(now)
     this.classify()
@@ -174,30 +174,47 @@ export class BlobTracker {
     return den === 0 ? 0 : num / den
   }
 
-  private matchByNCC(
-    predCx: number, predCy: number, searchRadius: number,
-    storedPatch: Uint8Array, patchHalf: number
-  ): { cx: number; cy: number; area: number; bbox: [number, number, number, number]; patch: Uint8Array; score: number } | null {
-    const winHalf = patchHalf + searchRadius
-    const x0 = Math.max(0, Math.round(predCx - winHalf))
-    const y0 = Math.max(0, Math.round(predCy - winHalf))
-    const x1 = Math.min(this.imgW, Math.round(predCx + winHalf))
-    const y1 = Math.min(this.imgH, Math.round(predCy + winHalf))
+  private scoreSAD(patch1: Uint8Array, patch2: Uint8Array): number {
+    const len = Math.min(patch1.length, patch2.length)
+    if (len === 0) return Infinity
+    let sad = 0
+    for (let i = 0; i < len; i++) {
+      sad += Math.abs(patch1[i] - patch2[i])
+    }
+    return sad / len
+  }
 
-    const patchW = patchHalf * 2
+  private matchBySliding(
+    predCx: number, predCy: number, searchRadius: number,
+    storedPatch: Uint8Array, patchW: number, patchH: number,
+    method: PatchMethod
+  ): { cx: number; cy: number; area: number; bbox: [number, number, number, number]; patch: Uint8Array; patchW: number; patchH: number; score: number } | null {
+    const halfW = Math.floor(patchW / 2)
+    const halfH = Math.floor(patchH / 2)
+    const margin = Math.max(halfW, halfH)
+    const x0 = Math.max(0, Math.round(predCx - margin - searchRadius))
+    const y0 = Math.max(0, Math.round(predCy - margin - searchRadius))
+    const x1 = Math.min(this.imgW, Math.round(predCx + margin + searchRadius))
+    const y1 = Math.min(this.imgH, Math.round(predCy + margin + searchRadius))
+
     let bestScore = -Infinity
     let bestCx = -1, bestCy = -1
 
-    for (let cy = y0 + patchHalf; cy < y1 - patchHalf; cy++) {
-      for (let cx = x0 + patchHalf; cx < x1 - patchHalf; cx++) {
+    for (let cy = y0 + halfH; cy < y1 - halfH; cy++) {
+      for (let cx = x0 + halfW; cx < x1 - halfW; cx++) {
         const dx = cx - predCx, dy = cy - predCy
         const dist = Math.sqrt(dx * dx + dy * dy)
-        if (dist > searchRadius) continue
+        if (dist > searchRadius + margin) continue
 
-        const candidate = this.extractGrayPatch(cx, cy, patchHalf)
-        const ncc = this.scoreNCC(storedPatch, candidate)
+        const candidate = this.extractGrayRect(cx - halfW, cy - halfH, patchW, patchH)
+        let rawScore: number
+        if (method === 'ncc') {
+          rawScore = this.scoreNCC(storedPatch, candidate)
+        } else {
+          rawScore = 1 / (1 + this.scoreSAD(storedPatch, candidate))
+        }
         const distPenalty = dist * 0.01
-        const score = ncc - distPenalty
+        const score = rawScore - distPenalty
 
         if (score > bestScore) {
           bestScore = score
@@ -209,14 +226,15 @@ export class BlobTracker {
 
     if (bestCx < 0 || bestScore < 0.1) return null
 
-    const areaHalf = Math.max(patchHalf, Math.ceil(Math.sqrt(this.config.maxArea) / 2))
-    const { area, bbox } = this.computeAreaFromBinary(bestCx, bestCy, areaHalf)
-    const newPatch = this.extractGrayPatch(bestCx, bestCy, patchHalf)
+    const areaHalfW = Math.max(halfW, Math.ceil(Math.sqrt(this.config.maxArea) / 2))
+    const areaHalfH = Math.max(halfH, Math.ceil(Math.sqrt(this.config.maxArea) / 2))
+    const { area, bbox } = this.computeAreaFromBinary(bestCx, bestCy, areaHalfW, areaHalfH)
+    const newPatch = this.extractGrayRect(bestCx - halfW, bestCy - halfH, patchW, patchH)
 
-    return { cx: bestCx, cy: bestCy, area, bbox, patch: newPatch, score: bestScore }
+    return { cx: bestCx, cy: bestCy, area, bbox, patch: newPatch, patchW, patchH, score: bestScore }
   }
 
-  private verify(now: number, dt: number) {
+  private verify(now: number, dt: number, method: PatchMethod) {
 
     for (const t of this.table) {
       const predCx = t.cx + t.vx * dt
@@ -225,8 +243,7 @@ export class BlobTracker {
       let found: { cx: number; cy: number; area: number; bbox: [number, number, number, number]; patch?: Uint8Array; score?: number } | null = null
 
       if (t.patch && t.displayId !== null) {
-        const patchHalf = Math.ceil(Math.sqrt(t.avgArea) / 2)
-        found = this.matchByNCC(predCx, predCy, this.config.searchRadius, t.patch, patchHalf)
+        found = this.matchBySliding(predCx, predCy, this.config.searchRadius, t.patch, t.patchW, t.patchH, method)
       }
 
       if (!found) {
@@ -236,8 +253,11 @@ export class BlobTracker {
       if (!found && t.displayId !== null && this.rawPixels) {
         const rawFound = this.searchAroundRaw(predCx, predCy, this.config.searchRadius, 10)
         if (rawFound) {
-          const patchHalf = Math.ceil(Math.sqrt(rawFound.area) / 2)
-          found = { ...rawFound, patch: this.extractGrayPatch(rawFound.cx, rawFound.cy, patchHalf) }
+          const pw = rawFound.bbox[2] - rawFound.bbox[0] + 8
+          const ph = rawFound.bbox[3] - rawFound.bbox[1] + 8
+          const px0 = Math.round(rawFound.cx) - Math.floor(pw / 2)
+          const py0 = Math.round(rawFound.cy) - Math.floor(ph / 2)
+          found = { ...rawFound, patch: this.extractGrayRect(px0, py0, pw, ph) }
         }
       }
 
@@ -263,10 +283,17 @@ export class BlobTracker {
 
         if (found.patch) {
           t.patch = found.patch
+          t.patchW = found.patchW
+          t.patchH = found.patchH
           t.patternScore = found.score ?? 0
         } else {
-          const patchHalf = Math.ceil(Math.sqrt(t.avgArea) / 2)
-          t.patch = this.extractGrayPatch(t.cx, t.cy, patchHalf)
+          const pw = t.bbox[2] - t.bbox[0] + 8
+          const ph = t.bbox[3] - t.bbox[1] + 8
+          const px0 = Math.round(t.cx) - Math.floor(pw / 2)
+          const py0 = Math.round(t.cy) - Math.floor(ph / 2)
+          t.patch = this.extractGrayRect(px0, py0, pw, ph)
+          t.patchW = pw
+          t.patchH = ph
           t.patternScore = 1
         }
       } else {
@@ -340,7 +367,11 @@ export class BlobTracker {
             t.missMs = 0
             t.framesSeen++
             t.lastSeen = now
-            t.patch = this.extractGrayPatch(blob.cx, blob.cy, Math.ceil(Math.sqrt(blob.area) / 2))
+            const pw = blob.bbox[2] - blob.bbox[0] + 8
+            const ph = blob.bbox[3] - blob.bbox[1] + 8
+            t.patch = this.extractGrayRect(Math.round(blob.cx) - Math.floor(pw / 2), Math.round(blob.cy) - Math.floor(ph / 2), pw, ph)
+            t.patchW = pw
+            t.patchH = ph
             adopted = true
             break
           }
@@ -614,8 +645,11 @@ export class BlobTracker {
     blob: { cx: number; cy: number; area: number; bbox: [number, number, number, number] },
     now: number
   ) {
-    const patchHalf = Math.ceil(Math.sqrt(blob.area) / 2)
-    const patch = this.extractGrayPatch(blob.cx, blob.cy, patchHalf)
+    const pw = blob.bbox[2] - blob.bbox[0] + 8
+    const ph = blob.bbox[3] - blob.bbox[1] + 8
+    const px0 = Math.round(blob.cx) - Math.floor(pw / 2)
+    const py0 = Math.round(blob.cy) - Math.floor(ph / 2)
+    const patch = this.extractGrayRect(px0, py0, pw, ph)
     this.table.push({
       internalId: this.nextId++,
       displayId: null,
@@ -634,6 +668,8 @@ export class BlobTracker {
       highJerkFrames: 0,
       avgArea: blob.area,
       patch,
+      patchW: pw,
+      patchH: ph,
       patternScore: 1,
     })
   }
