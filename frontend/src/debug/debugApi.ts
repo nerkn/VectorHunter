@@ -2,11 +2,9 @@ import { useGameStore, TargetConfig } from '../store/gameStore'
 import { useDroneStore } from '../store/droneStore'
 import { useDetectionStore } from '../store/detectionStore'
 import { useTargetStore } from '../store/targetStore'
-import { useCamFrameStore } from '../store/camFrameStore'
 import { useFlightDirector } from '../store/flightDirector'
 import { startRecording, stopRecording } from '../utils/recorder'
-import { BlobTracker } from '../utils/blobTracker'
-import { setDebugMode as setBlobDebugMode } from '../hooks/useBlobDetection'
+import { pipeline } from '../pipeline/FramePipeline'
 
 declare global {
   interface Window {
@@ -16,7 +14,7 @@ declare global {
 
 const HEX = '0123456789ABCDEF'
 
-function extractBlobHex(pixels: Uint8Array, w: number, h: number, bbox: [number, number, number, number]): string {
+function extractBlobHex(gray: Uint8Array, w: number, h: number, bbox: [number, number, number, number]): string {
   const pad = 2
   const [bx, by, bx2, by2] = bbox
   const x0 = Math.max(0, bx - pad)
@@ -27,9 +25,7 @@ function extractBlobHex(pixels: Uint8Array, w: number, h: number, bbox: [number,
   for (let y = y0; y < y1; y++) {
     let row = ''
     for (let x = x0; x < x1; x++) {
-      const idx = (y * w + x) * 4
-      const brightness = Math.max(pixels[idx], pixels[idx + 1], pixels[idx + 2])
-      row += HEX[Math.min(15, brightness >> 4)]
+      row += HEX[Math.min(15, gray[y * w + x] >> 4)]
     }
     lines.push(row)
   }
@@ -131,9 +127,11 @@ const debugApi = {
 
   getTrackedDetail() {
     const detection = useDetectionStore.getState()
-    const frameData = useCamFrameStore.getState().xorFrame
+    const gray = pipeline.getGrayXor()
+    const w = pipeline.getWidth()
+    const h = pipeline.getHeight()
     return detection.tracked.map(t => {
-      const hex = frameData ? extractBlobHex(frameData.pixels, frameData.w, frameData.h, t.bbox) : ''
+      const hex = gray.length > 0 ? extractBlobHex(gray, w, h, t.bbox) : ''
       const flat = hex.replace(/\n/g, '')
       const nonzero = flat.replace(/0/g, '').length
       return {
@@ -160,17 +158,15 @@ const debugApi = {
   },
 
   analyzeXor(threshold?: number) {
-    const frameData = useCamFrameStore.getState().xorFrame
-    if (!frameData) return { error: 'No XOR frame available' }
+    const gray = pipeline.getGrayXor()
+    const w = pipeline.getWidth()
+    const h = pipeline.getHeight()
+    if (gray.length === 0) return { error: 'No XOR frame available' }
 
     const thr = threshold ?? useDetectionStore.getState().threshold
-    const { pixels, w, h } = frameData
     const binary = new Uint8Array(w * h)
     for (let i = 0; i < w * h; i++) {
-      const r = pixels[i * 4]
-      const g = pixels[i * 4 + 1]
-      const b = pixels[i * 4 + 2]
-      binary[i] = (r + g + b) / 3 > thr ? 1 : 0
+      binary[i] = gray[i] > thr ? 1 : 0
     }
 
     const visited = new Uint8Array(w * h)
@@ -182,7 +178,7 @@ const debugApi = {
         if (visited[px] || !binary[px]) continue
         const blob = floodFillBlob(binary, w, h, x, y, visited)
         if (blob && blob.area >= 3) {
-          const hex = extractBlobHex(pixels, w, h, blob.bbox)
+          const hex = extractBlobHex(gray, w, h, blob.bbox)
           const flat = hex.replace(/\n/g, '')
           const nonzero = flat.replace(/0/g, '').length
           blobs.push({
@@ -226,8 +222,7 @@ const debugApi = {
     useDroneStore.getState().setPosition([0, 20, 0])
     useDroneStore.getState().setInput('backward', false)
     useDroneStore.setState({ yaw: 0, pitch: 0 })
-    const tracker = useDetectionStore.getState().tracker
-    if (tracker) tracker.reset()
+    pipeline.reset()
     useDetectionStore.getState().setDetectionResult([])
     useFlightDirector.getState().setCommand('idle', null)
     useDetectionStore.getState().lockTarget(null)
@@ -286,19 +281,19 @@ const debugApi = {
   },
 
   xorStats() {
-    const cf = useCamFrameStore.getState().xorFrame
-    if (!cf) return { error: 'no xor frame' }
-    const { pixels, w, h } = cf
+    const gray = pipeline.getGrayXor()
+    const w = pipeline.getWidth()
+    const h = pipeline.getHeight()
+    if (gray.length === 0) return { error: 'no xor frame' }
     let max = 0, sum = 0, nonzero = 0
     const hotPixels: {x:number,y:number,v:number}[] = []
-    for (let i = 0; i < pixels.length; i += 4) {
-      const v = (pixels[i] + pixels[i+1] + pixels[i+2]) / 3
+    for (let i = 0; i < gray.length; i++) {
+      const v = gray[i]
       if (v > max) max = v
       sum += v
       if (v > 0) nonzero++
       if (v > 50) {
-        const idx = i / 4
-        hotPixels.push({x: idx % w, y: Math.floor(idx / w), v: Math.round(v)})
+        hotPixels.push({x: i % w, y: Math.floor(i / w), v: Math.round(v)})
       }
     }
     const total = w * h
@@ -330,12 +325,24 @@ const debugApi = {
   },
 
   getCamFrame() {
-    return useCamFrameStore.getState().xorFrame
+    const gray = pipeline.getGrayXor()
+    const w = pipeline.getWidth()
+    const h = pipeline.getHeight()
+    if (gray.length === 0) return null
+    const pixels = new Uint8Array(w * h * 4)
+    for (let i = 0; i < w * h; i++) {
+      const i4 = i * 4
+      pixels[i4] = gray[i]
+      pixels[i4 + 1] = gray[i]
+      pixels[i4 + 2] = gray[i]
+      pixels[i4 + 3] = 255
+    }
+    return { pixels, w, h }
   },
 
   setDebugMode(v: boolean) {
     debugMode = v
-    setBlobDebugMode(v)
+    pipeline.setDebugMode(v)
   },
 
   setPhase(phase: string) {
@@ -354,7 +361,7 @@ const debugApi = {
         const elapsed = performance.now() - startTime
         if (elapsed > timeout) {
           debugMode = false
-          setBlobDebugMode(false)
+          pipeline.setDebugMode(false)
           useDroneStore.getState().setInput('forward', false)
           useDroneStore.getState().setInput('boost', false)
           resolve('TIMEOUT after ' + Math.round(elapsed) + 'ms. Targets: ' + useTargetStore.getState().targets.filter(t=>t.active).length)
@@ -364,7 +371,7 @@ const debugApi = {
         const targets = useTargetStore.getState().targets.filter(t => t.active)
         if (targets.length === 0) {
           debugMode = false
-          setBlobDebugMode(false)
+          pipeline.setDebugMode(false)
           resolve('TARGET DESTROYED in ' + Math.round(elapsed) + 'ms')
           return
         }
@@ -402,7 +409,7 @@ const debugApi = {
   autoHunt(maxTimeMs?: number) {
     const timeout = maxTimeMs ?? 60000
     debugMode = true
-    setBlobDebugMode(true)
+    pipeline.setDebugMode(true)
     useGameStore.getState().setPhase('playing')
 
     return new Promise<string>((resolve) => {
@@ -416,7 +423,7 @@ const debugApi = {
 
       const done = (msg: string) => {
         debugMode = false
-        setBlobDebugMode(false)
+        pipeline.setDebugMode(false)
         useDroneStore.getState().setInput('forward', false)
         useDroneStore.getState().setInput('boost', false)
         resolve(msg)
@@ -584,7 +591,9 @@ const debugApi = {
     const ax = debugApi.analyzeXor()
     const confirmed = tr.filter(t => t.displayId !== null)
     const noise = tr.filter(t => t.displayId === null)
-    const cf = useCamFrameStore.getState().xorFrame
+    const gray = pipeline.getGrayXor()
+    const w = pipeline.getWidth()
+    const h = pipeline.getHeight()
     return {
       phase: st.phase,
       drone: {
@@ -607,7 +616,7 @@ const debugApi = {
       })),
       noise: noise.length,
       xorBlobs: ax.blobs?.length ?? 0,
-      xorFrame: cf ? {w: cf.w, h: cf.h, hasPixels: cf.pixels.length > 0} : null,
+      xorFrame: gray.length > 0 ? {w, h, hasPixels: true} : null,
       cmd: st.flightDirector.command,
       locked: st.detection.lockedTarget,
     }

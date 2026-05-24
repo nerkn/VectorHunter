@@ -49,17 +49,32 @@ export class BlobFinder {
   private config: BlobFinderConfig
   private autoThreshold = 25
 
+  private _thresholdBuf: Uint8Array = new Uint8Array(0)
+  private _dilateBuf: Uint8Array = new Uint8Array(0)
+  private _visitedBuf: Uint8Array = new Uint8Array(0)
+  private _blurOut: Uint8Array = new Uint8Array(0)
+  private _blurTemp: Float32Array = new Float32Array(0)
+
   constructor(config: Partial<BlobFinderConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
   }
 
-  setImage(pixels: Uint8Array, w: number, h: number) {
+  private ensureBuffers() {
+    const n = this.w * this.h
+    if (this._thresholdBuf.length !== n) {
+      this._thresholdBuf = new Uint8Array(n)
+      this._dilateBuf = new Uint8Array(n)
+      this._visitedBuf = new Uint8Array(n)
+      this._blurOut = new Uint8Array(n)
+      this._blurTemp = new Float32Array(n)
+    }
+  }
+
+  setGray(gray: Uint8Array, w: number, h: number) {
     this.w = w
     this.h = h
-    this.gray = new Uint8Array(w * h)
-    for (let i = 0; i < w * h; i++) {
-      this.gray[i] = (pixels[i * 4] + pixels[i * 4 + 1] + pixels[i * 4 + 2]) / 3
-    }
+    this.gray = gray
+    this.ensureBuffers()
     this.autoThreshold = this.computeAutoThreshold()
   }
 
@@ -73,32 +88,32 @@ export class BlobFinder {
 
   dilateAndFloodFill(overrides: Partial<BlobFinderConfig> = {}): BlobCandidate[] {
     const cfg = { ...this.config, ...overrides }
-    const binary = this.threshold(cfg.threshold)
-    const dilated = this.dilate(binary, cfg.dilateRadius)
-    const raw = this.floodFillAll(dilated)
-    return this.nms(this.areaFilter(raw), cfg.nmsDistance)
+    this.thresholdInto(this._thresholdBuf, cfg.threshold)
+    this.dilateInto(this._dilateBuf, this._thresholdBuf, cfg.dilateRadius)
+    const raw = this.floodFillAll(this._dilateBuf)
+    return this.nms(this.areaFilter(raw, cfg), cfg.nmsDistance)
   }
 
-  hysteresisThreshold(overrides: Partial<BlobFinderConfig> = {}): BlobCandidate[] {
+  hysteresis(overrides: Partial<BlobFinderConfig> = {}): BlobCandidate[] {
     const cfg = { ...this.config, ...overrides }
     const grown = this.hysteresisGrow(cfg.hysteresisLow, cfg.hysteresisHigh)
     const raw = this.floodFillAll(grown)
-    return this.nms(this.areaFilter(raw), cfg.nmsDistance)
+    return this.nms(this.areaFilter(raw, cfg), cfg.nmsDistance)
   }
 
   nearbyBlobMerge(overrides: Partial<BlobFinderConfig> = {}): BlobCandidate[] {
     const cfg = { ...this.config, ...overrides }
-    const binary = this.threshold(cfg.threshold)
-    const raw = this.floodFillAll(binary)
-    return this.nms(this.areaFilter(this.mergeNearby(raw, cfg.mergeDistance)), cfg.nmsDistance)
+    this.thresholdInto(this._thresholdBuf, cfg.threshold)
+    const raw = this.floodFillAll(this._thresholdBuf)
+    return this.nms(this.areaFilter(this.mergeNearby(raw, cfg.mergeDistance), cfg), cfg.nmsDistance)
   }
 
   dbscan(overrides: Partial<BlobFinderConfig> = {}): BlobCandidate[] {
     const cfg = { ...this.config, ...overrides }
-    const binary = this.threshold(cfg.threshold)
+    this.thresholdInto(this._thresholdBuf, cfg.threshold)
     const points: number[] = []
     for (let i = 0; i < this.w * this.h; i++) {
-      if (binary[i]) points.push(i)
+      if (this._thresholdBuf[i]) points.push(i)
     }
 
     const labels = new Int32Array(points.length).fill(-1)
@@ -153,20 +168,20 @@ export class BlobFinder {
 
   gaussianBlurPeak(overrides: Partial<BlobFinderConfig> = {}): BlobCandidate[] {
     const cfg = { ...this.config, ...overrides }
-    const blurred = this.gaussianBlur(this.gray, cfg.blurRadius)
+    this.gaussianBlurInto(this._blurOut, this._blurTemp, this.gray, cfg.blurRadius)
     const dist = cfg.peakMinDistance
     const raw: BlobCandidate[] = []
 
     for (let y = dist; y < this.h - dist; y++) {
       for (let x = dist; x < this.w - dist; x++) {
-        const val = blurred[y * this.w + x]
+        const val = this._blurOut[y * this.w + x]
         if (val < cfg.threshold) continue
 
         let isPeak = true
         for (let dy = -dist; dy <= dist && isPeak; dy++) {
           for (let dx = -dist; dx <= dist && isPeak; dx++) {
             if (dx === 0 && dy === 0) continue
-            if (blurred[(y + dy) * this.w + (x + dx)] > val) isPeak = false
+            if (this._blurOut[(y + dy) * this.w + (x + dx)] > val) isPeak = false
           }
         }
 
@@ -315,16 +330,14 @@ export class BlobFinder {
     return Math.min(255, Math.max(10, mean + 2 * std))
   }
 
-  private threshold(t: number): Uint8Array {
-    const binary = new Uint8Array(this.w * this.h)
+  private thresholdInto(dst: Uint8Array, t: number) {
     for (let i = 0; i < this.w * this.h; i++) {
-      binary[i] = this.gray[i] > t ? 1 : 0
+      dst[i] = this.gray[i] > t ? 1 : 0
     }
-    return binary
   }
 
-  private dilate(src: Uint8Array, radius: number): Uint8Array {
-    const out = new Uint8Array(this.w * this.h)
+  private dilateInto(dst: Uint8Array, src: Uint8Array, radius: number) {
+    dst.fill(0)
     for (let y = 0; y < this.h; y++) {
       for (let x = 0; x < this.w; x++) {
         let found = false
@@ -336,10 +349,9 @@ export class BlobFinder {
             }
           }
         }
-        out[y * this.w + x] = found ? 1 : 0
+        dst[y * this.w + x] = found ? 1 : 0
       }
     }
-    return out
   }
 
   private hysteresisGrow(low?: number, high?: number): Uint8Array {
@@ -377,7 +389,8 @@ export class BlobFinder {
   }
 
   private floodFillAll(src: Uint8Array): BlobCandidate[] {
-    const visited = new Uint8Array(this.w * this.h)
+    this._visitedBuf.fill(0)
+    const visited = this._visitedBuf
     const blobs: BlobCandidate[] = []
 
     for (let y = 0; y < this.h; y++) {
@@ -431,49 +444,63 @@ export class BlobFinder {
     return blobs
   }
 
-  private areaFilter(blobs: BlobCandidate[]): BlobCandidate[] {
+  private areaFilter(blobs: BlobCandidate[], overrides?: Partial<BlobFinderConfig>): BlobCandidate[] {
+    const cfg = { ...this.config, ...overrides }
     return blobs.filter(b => {
       const a = b.w * b.h
-      return a >= this.config.minArea && a <= this.config.maxArea
+      return a >= cfg.minArea && a <= cfg.maxArea
     })
   }
 
-  private mergeNearby(blobs: BlobCandidate[], maxDist: number): BlobCandidate[] {
+  private mergeNearby(blobs: BlobCandidate[], maxGap: number): BlobCandidate[] {
     const used = new Set<number>()
     const merged: BlobCandidate[] = []
 
+    const bboxOf = (b: BlobCandidate) => ({
+      left: b.cx - Math.floor(b.w / 2),
+      right: b.cx + Math.floor(b.w / 2),
+      top: b.cy - Math.floor(b.h / 2),
+      bottom: b.cy + Math.floor(b.h / 2),
+    })
+
+    const shouldMerge = (a: BlobCandidate, b: BlobCandidate) => {
+      const ba = bboxOf(a), bb = bboxOf(b)
+      const hGap = Math.max(0, Math.max(ba.left - bb.right, bb.left - ba.right))
+      const vGap = Math.max(0, Math.max(ba.top - bb.bottom, bb.top - ba.bottom))
+      return hGap <= maxGap && vGap <= maxGap
+    }
+
+    const unionBbox = (a: BlobCandidate, b: BlobCandidate) => {
+      const ba = bboxOf(a), bb = bboxOf(b)
+      const left = Math.min(ba.left, bb.left)
+      const right = Math.max(ba.right, bb.right)
+      const top = Math.min(ba.top, bb.top)
+      const bottom = Math.max(ba.bottom, bb.bottom)
+      return { cx: Math.round((left + right) / 2), cy: Math.round((top + bottom) / 2), w: right - left, h: bottom - top }
+    }
+
     for (let i = 0; i < blobs.length; i++) {
       if (used.has(i)) continue
-      let totalW = blobs[i].w * blobs[i].confidence
-      let totalH = blobs[i].h * blobs[i].confidence
-      let totalConf = blobs[i].confidence
-      let cx = blobs[i].cx * blobs[i].confidence
-      let cy = blobs[i].cy * blobs[i].confidence
-      let weight = blobs[i].confidence
+      let cur = { ...blobs[i] }
       used.add(i)
 
-      for (let j = i + 1; j < blobs.length; j++) {
-        if (used.has(j)) continue
-        const dist = Math.sqrt((blobs[j].cx - blobs[i].cx) ** 2 + (blobs[j].cy - blobs[i].cy) ** 2)
-        if (dist < maxDist) {
-          cx += blobs[j].cx * blobs[j].confidence
-          cy += blobs[j].cy * blobs[j].confidence
-          totalW += blobs[j].w * blobs[j].confidence
-          totalH += blobs[j].h * blobs[j].confidence
-          totalConf = Math.max(totalConf, blobs[j].confidence)
-          weight += blobs[j].confidence
-          used.add(j)
+      let changed = true
+      while (changed) {
+        changed = false
+        for (let j = i + 1; j < blobs.length; j++) {
+          if (used.has(j)) continue
+          if (shouldMerge(cur, blobs[j])) {
+            const u = unionBbox(cur, blobs[j])
+            cur = { cx: u.cx, cy: u.cy, w: u.w, h: u.h, confidence: Math.max(cur.confidence, blobs[j].confidence) }
+            used.add(j)
+            changed = true
+          }
         }
       }
 
-      merged.push({
-        cx: Math.round(cx / weight),
-        cy: Math.round(cy / weight),
-        w: Math.round(totalW / weight),
-        h: Math.round(totalH / weight),
-        confidence: totalConf,
-      })
+      merged.push(cur)
     }
+
     return merged
   }
 
@@ -486,7 +513,7 @@ export class BlobFinder {
     while (left > 0 && this.gray[cy * this.w + left] > t && cx - left < maxR) left--
     while (right < this.w - 1 && this.gray[cy * this.w + right] > t && right - cx < maxR) right++
     while (top > 0 && this.gray[top * this.w + cx] > t && cy - top < maxR) top--
-    while (bottom < this.h - 1 && this.gray[bottom * this.w + cx] > t && bottom - cy < maxR) bottom++
+    while (bottom < this.h - 1 && this.gray[bottom * this.w + cx] > t && bottom - cy < maxR) bottom--
 
     return { w: right - left + 1, h: bottom - top + 1 }
   }
@@ -523,8 +550,7 @@ export class BlobFinder {
     return neighbors
   }
 
-  private gaussianBlur(src: Uint8Array, radius: number): Uint8Array {
-    const out = new Uint8Array(this.w * this.h)
+  private gaussianBlurInto(out: Uint8Array, temp: Float32Array, src: Uint8Array, radius: number) {
     const size = radius * 2 + 1
     const kernel = new Float32Array(size)
     const sigma = radius / 2
@@ -536,7 +562,6 @@ export class BlobFinder {
     }
     for (let i = 0; i < size; i++) kernel[i] /= kSum
 
-    const temp = new Float32Array(this.w * this.h)
     for (let y = 0; y < this.h; y++) {
       for (let x = 0; x < this.w; x++) {
         let val = 0
@@ -557,6 +582,5 @@ export class BlobFinder {
         out[y * this.w + x] = Math.round(val)
       }
     }
-    return out
   }
 }

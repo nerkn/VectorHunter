@@ -24,7 +24,7 @@ export function startRecording(params: Recording['params']) {
 }
 
 export function recordFrame(
-  pixels: Uint8Array, w: number, h: number,
+  gray: Uint8Array, w: number, h: number,
   tracked: TrackedBlob[]
 ) {
   if (!recording) return
@@ -32,10 +32,11 @@ export function recordFrame(
 
   const imageData = new ImageData(w, h)
   for (let i = 0; i < w * h; i++) {
-    imageData.data[i * 4] = pixels[i * 4]
-    imageData.data[i * 4 + 1] = pixels[i * 4 + 1]
-    imageData.data[i * 4 + 2] = pixels[i * 4 + 2]
-    imageData.data[i * 4 + 3] = 255
+    const i4 = i * 4
+    imageData.data[i4] = gray[i]
+    imageData.data[i4 + 1] = gray[i]
+    imageData.data[i4 + 2] = gray[i]
+    imageData.data[i4 + 3] = 255
   }
 
   recording.frames.push({

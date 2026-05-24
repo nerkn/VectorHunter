@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import './debug/debugApi'
@@ -11,14 +11,18 @@ import TargetOverlay from './components/TargetOverlay'
 import Playback from './components/Playback'
 import { useFlightControls } from './hooks/useFlightControls'
 import { useTelemetry } from './hooks/useTelemetry'
-import { useBlobDetection } from './hooks/useBlobDetection'
+import { pipeline } from './pipeline/FramePipeline'
 import { useGameStore } from './store/gameStore'
 import { useDetectionStore } from './store/detectionStore'
 
 function Inner() {
   useFlightControls()
   useTelemetry()
-  useBlobDetection()
+  useEffect(() => {
+    pipeline.start()
+    useDetectionStore.getState().setTracker(pipeline.getTracker())
+    return () => pipeline.stop()
+  }, [])
   return null
 }
 

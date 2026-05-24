@@ -1,7 +1,7 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
 import * as THREE from 'three'
-import { useCamFrameStore } from '../store/camFrameStore'
 import { useGameStore } from '../store/gameStore'
+import { pipeline } from '../pipeline/FramePipeline'
 
 interface Props {
   frames: Record<string, THREE.WebGLRenderTarget> | null
@@ -25,8 +25,39 @@ export default function CamLayout({ frames, renderer, onMainChange }: Props) {
   }
   const thumbnails = useRef<Record<string, HTMLCanvasElement | null>>({})
 
+  const camPixelsRef = useRef<Uint8Array>(new Uint8Array(0))
+  const leftPxRef = useRef<Uint8Array>(new Uint8Array(0))
+  const rightPxRef = useRef<Uint8Array>(new Uint8Array(0))
+  const xorImageDataRef = useRef<ImageData | null>(null)
+  const thumbImageDataRef = useRef<Record<string, ImageData>>({})
+
   const drawFeeds = useCallback(() => {
     if (!frames || !renderer) return
+
+    let maxW = 0, maxH = 0
+    for (const rt of Object.values(frames)) {
+      if (rt.width > maxW) maxW = rt.width
+      if (rt.height > maxH) maxH = rt.height
+    }
+    const n4 = maxW * maxH * 4
+    if (camPixelsRef.current.length !== n4) {
+      camPixelsRef.current = new Uint8Array(n4)
+    }
+
+    const px = camPixelsRef.current
+
+    if (frames.left && frames.right) {
+      const w = frames.left.width
+      const h = frames.left.height
+      const lr4 = w * h * 4
+      if (leftPxRef.current.length !== lr4) {
+        leftPxRef.current = new Uint8Array(lr4)
+        rightPxRef.current = new Uint8Array(lr4)
+      }
+      renderer.readRenderTargetPixels(frames.left, 0, 0, w, h, leftPxRef.current)
+      renderer.readRenderTargetPixels(frames.right, 0, 0, w, h, rightPxRef.current)
+      pipeline.feed(leftPxRef.current, rightPxRef.current, w, h)
+    }
 
     for (const [id, rt] of Object.entries(frames)) {
       const canvas = thumbnails.current[id]
@@ -36,18 +67,27 @@ export default function CamLayout({ frames, renderer, onMainChange }: Props) {
 
       const w = rt.width
       const h = rt.height
-      const pixels = new Uint8Array(w * h * 4)
-      renderer.readRenderTargetPixels(rt, 0, 0, w, h, pixels)
 
-      const imageData = new ImageData(w, h)
+      if (id === 'left') {
+        px.set(leftPxRef.current.subarray(0, w * h * 4))
+      } else if (id === 'right') {
+        px.set(rightPxRef.current.subarray(0, w * h * 4))
+      } else {
+        renderer.readRenderTargetPixels(rt, 0, 0, w, h, px)
+      }
+
+      if (!thumbImageDataRef.current[id] || thumbImageDataRef.current[id].width !== w || thumbImageDataRef.current[id].height !== h) {
+        thumbImageDataRef.current[id] = new ImageData(w, h)
+      }
+      const imageData = thumbImageDataRef.current[id]
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
           const srcIdx = ((h - 1 - y) * w + x) * 4
           const dstIdx = (y * w + x) * 4
-          imageData.data[dstIdx] = pixels[srcIdx]
-          imageData.data[dstIdx + 1] = pixels[srcIdx + 1]
-          imageData.data[dstIdx + 2] = pixels[srcIdx + 2]
-          imageData.data[dstIdx + 3] = pixels[srcIdx + 3]
+          imageData.data[dstIdx] = px[srcIdx]
+          imageData.data[dstIdx + 1] = px[srcIdx + 1]
+          imageData.data[dstIdx + 2] = px[srcIdx + 2]
+          imageData.data[dstIdx + 3] = px[srcIdx + 3]
         }
       }
       canvas.width = w
@@ -61,26 +101,23 @@ export default function CamLayout({ frames, renderer, onMainChange }: Props) {
       if (ctx) {
         const w = frames.left.width
         const h = frames.left.height
-        const leftPx = new Uint8Array(w * h * 4)
-        const rightPx = new Uint8Array(w * h * 4)
-        renderer.readRenderTargetPixels(frames.left, 0, 0, w, h, leftPx)
-        renderer.readRenderTargetPixels(frames.right, 0, 0, w, h, rightPx)
+        const gray = pipeline.getGrayXor()
 
-        const img = ctx.createImageData(w, h)
-        for (let i = 0; i < leftPx.length; i += 4) {
-          img.data[i] = leftPx[i] ^ rightPx[i]
-          img.data[i + 1] = leftPx[i + 1] ^ rightPx[i + 1]
-          img.data[i + 2] = leftPx[i + 2] ^ rightPx[i + 2]
-          img.data[i + 3] = 255
+        if (!xorImageDataRef.current || xorImageDataRef.current.width !== w || xorImageDataRef.current.height !== h) {
+          xorImageDataRef.current = new ImageData(w, h)
+        }
+        const imgData = xorImageDataRef.current.data
+        for (let i = 0; i < w * h; i++) {
+          const i4 = i * 4
+          const v = gray.length > i ? gray[i] : 0
+          imgData[i4] = v
+          imgData[i4 + 1] = v
+          imgData[i4 + 2] = v
+          imgData[i4 + 3] = 255
         }
         xorCanvas.width = w
         xorCanvas.height = h
-        ctx.putImageData(img, 0, 0)
-
-        useCamFrameStore.getState().setXorFrame({
-          pixels: new Uint8Array(img.data),
-          w, h,
-        })
+        ctx.putImageData(xorImageDataRef.current, 0, 0)
       }
     }
   }, [frames, renderer])

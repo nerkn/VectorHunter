@@ -1,5 +1,7 @@
 export type PatchMethod = 'ncc' | 'xor'
 
+import { BlobFinder, BlobCandidate } from './blobFinder'
+
 export interface TrackedBlob {
   internalId: number
   displayId: number | null
@@ -34,6 +36,7 @@ interface TrackerConfig {
   residualThreshold: number
   velocitySmoothing: number
   maxMissingMs: number
+  maxNoiseObjects: number
   frameDt: number
 }
 
@@ -41,13 +44,14 @@ const DEFAULT_CONFIG: TrackerConfig = {
   searchRadius: 30,
   minArea: 4,
   maxArea: 256,
-  confirmationFrames: 3,
-  demotionFrames: 15,
+  confirmationFrames: 10,
+  demotionFrames: 10,
   jerkDemotionFrames: 10,
   jerkThreshold: 120,
-  residualThreshold: 8,
+  residualThreshold: 15,
   velocitySmoothing: 0.5,
   maxMissingMs: 600,
+  maxNoiseObjects: 5,
   frameDt: 1 / 24,
 }
 
@@ -58,20 +62,43 @@ export class BlobTracker {
   private activeDisplayIds = new Set<number>()
   private config: TrackerConfig
   private binary: Uint8Array | null = null
-  private rawPixels: Uint8Array | null = null
+  private gray: Uint8Array | null = null
   private imgW = 0
   private imgH = 0
+
+  private blobFinder = new BlobFinder()
+
+  private _patchBuf: Uint8Array = new Uint8Array(0)
+  private _coveredBuf: Uint8Array = new Uint8Array(0)
+  private _matchPatchBuf: Uint8Array = new Uint8Array(0)
+  private _searchVisited: Uint32Array = new Uint32Array(0)
+  private _searchGen = 0
 
   constructor(config: Partial<TrackerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
     this.displayPool = [1, 2, 3, 4, 5, 6, 7, 8, 9]
   }
 
-  setBinaryImage(binary: Uint8Array, w: number, h: number, rawPixels?: Uint8Array) {
+  setGrayImage(binary: Uint8Array, gray: Uint8Array, w: number, h: number) {
     this.binary = binary
-    this.rawPixels = rawPixels ?? null
+    this.gray = gray
     this.imgW = w
     this.imgH = h
+    this.blobFinder.setGray(gray, w, h)
+    const n = w * h
+    if (this._coveredBuf.length !== n) {
+      this._coveredBuf = new Uint8Array(n)
+    }
+    if (this._matchPatchBuf.length < n) {
+      this._matchPatchBuf = new Uint8Array(n)
+    }
+    if (this._patchBuf.length < n) {
+      this._patchBuf = new Uint8Array(n)
+    }
+    if (this._searchVisited.length !== n) {
+      this._searchVisited = new Uint32Array(n)
+      this._searchGen = 0
+    }
   }
 
   setAreaRange(min: number, max: number) {
@@ -89,11 +116,16 @@ export class BlobTracker {
       return this.table
     }
 
+    const t0 = performance.now()
     this.verify(now, dt, patchMethod)
+    const tVerify = performance.now()
     this.deduplicate()
     this.detectNew(now)
+    const tDetect = performance.now()
     this.classify()
     this.expire()
+    const tEnd = performance.now()
+    if (tEnd - t0 > 10) console.log(`tracker: verify=${(tVerify-t0).toFixed(1)}ms detectNew=${(tDetect-tVerify).toFixed(1)}ms total=${(tEnd-t0).toFixed(1)}ms objs=${this.table.length} withId=${this.table.filter(t=>t.displayId!==null).length}`)
 
     return this.table
   }
@@ -113,16 +145,15 @@ export class BlobTracker {
     this.displayPool = [1, 2, 3, 4, 5, 6, 7, 8, 9]
   }
 
-  private extractGrayRect(x0: number, y0: number, w: number, h: number): Uint8Array {
-    const patch = new Uint8Array(w * h)
+  private extractGrayRect(x0: number, y0: number, w: number, h: number, dst?: Uint8Array): Uint8Array {
+    const patch = dst && dst.length >= w * h ? dst : new Uint8Array(w * h)
     let idx = 0
     for (let dy = 0; dy < h; dy++) {
       for (let dx = 0; dx < w; dx++) {
         const x = x0 + dx
         const y = y0 + dy
-        if (x >= 0 && x < this.imgW && y >= 0 && y < this.imgH && this.rawPixels) {
-          const i = (y * this.imgW + x) * 4
-          patch[idx++] = (this.rawPixels[i] + this.rawPixels[i + 1] + this.rawPixels[i + 2]) / 3
+        if (x >= 0 && x < this.imgW && y >= 0 && y < this.imgH && this.gray) {
+          patch[idx++] = this.gray[y * this.imgW + x]
         } else {
           patch[idx++] = 0
         }
@@ -206,7 +237,7 @@ export class BlobTracker {
         const dist = Math.sqrt(dx * dx + dy * dy)
         if (dist > searchRadius + margin) continue
 
-        const candidate = this.extractGrayRect(cx - halfW, cy - halfH, patchW, patchH)
+        const candidate = this.extractGrayRect(cx - halfW, cy - halfH, patchW, patchH, this._matchPatchBuf)
         let rawScore: number
         if (method === 'ncc') {
           rawScore = this.scoreNCC(storedPatch, candidate)
@@ -229,7 +260,7 @@ export class BlobTracker {
     const areaHalfW = Math.max(halfW, Math.ceil(Math.sqrt(this.config.maxArea) / 2))
     const areaHalfH = Math.max(halfH, Math.ceil(Math.sqrt(this.config.maxArea) / 2))
     const { area, bbox } = this.computeAreaFromBinary(bestCx, bestCy, areaHalfW, areaHalfH)
-    const newPatch = this.extractGrayRect(bestCx - halfW, bestCy - halfH, patchW, patchH)
+    const newPatch = this.extractGrayRect(bestCx - halfW, bestCy - halfH, patchW, patchH, this._patchBuf)
 
     return { cx: bestCx, cy: bestCy, area, bbox, patch: newPatch, patchW, patchH, score: bestScore }
   }
@@ -240,17 +271,21 @@ export class BlobTracker {
       const predCx = t.cx + t.vx * dt
       const predCy = t.cy + t.vy * dt
 
-      let found: { cx: number; cy: number; area: number; bbox: [number, number, number, number]; patch?: Uint8Array; score?: number } | null = null
+      let found: { cx: number; cy: number; area: number; bbox: [number, number, number, number]; patch?: Uint8Array; patchW?: number; patchH?: number; score?: number } | null = null
 
       if (t.patch && t.displayId !== null) {
         found = this.matchBySliding(predCx, predCy, this.config.searchRadius, t.patch, t.patchW, t.patchH, method)
       }
 
-      if (!found) {
+      if (!found && t.displayId === null && this.binary) {
+        found = this.searchBright(predCx, predCy, this.config.searchRadius)
+      }
+
+      if (!found && t.displayId !== null) {
         found = this.searchAround(predCx, predCy, this.config.searchRadius)
       }
 
-      if (!found && t.displayId !== null && this.rawPixels) {
+      if (!found && t.displayId !== null && this.gray) {
         const rawFound = this.searchAroundRaw(predCx, predCy, this.config.searchRadius, 10)
         if (rawFound) {
           const pw = rawFound.bbox[2] - rawFound.bbox[0] + 8
@@ -327,9 +362,10 @@ export class BlobTracker {
   }
 
   private detectNew(now: number) {
-    if (!this.binary) return
+    if (!this.gray) return
 
-    const covered = new Uint8Array(this.imgW * this.imgH)
+    this._coveredBuf.fill(0)
+    const covered = this._coveredBuf
     const r = this.config.searchRadius
 
     for (const t of this.table) {
@@ -345,41 +381,52 @@ export class BlobTracker {
       }
     }
 
-    const visited = new Uint8Array(this.imgW * this.imgH)
+    const blobs = this.blobFinder.nearbyBlobMerge({
+      threshold: 25,
+      mergeDistance: 0,
+      nmsDistance: 15,
+      minArea: this.config.minArea,
+      maxArea: this.config.maxArea,
+    })
+
     const missed = this.table.filter(t => t.missMs > 0 && t.missMs <= this.config.maxMissingMs)
 
-    for (let y = 0; y < this.imgH; y++) {
-      for (let x = 0; x < this.imgW; x++) {
-        const px = y * this.imgW + x
-        if (covered[px] || visited[px] || !this.binary[px]) continue
+    for (const blob of blobs) {
+      if (covered[Math.round(blob.cy) * this.imgW + Math.round(blob.cx)]) continue
 
-        const blob = this.floodFillFull(x, y, visited)
-        if (!blob || blob.area < this.config.minArea || blob.area > this.config.maxArea) continue
+      const bbox: [number, number, number, number] = [
+        Math.round(blob.cx - blob.w / 2),
+        Math.round(blob.cy - blob.h / 2),
+        Math.round(blob.cx + blob.w / 2),
+        Math.round(blob.cy + blob.h / 2),
+      ]
+      const entry = { cx: blob.cx, cy: blob.cy, area: blob.w * blob.h, bbox }
 
-        let adopted = false
-        for (const t of missed) {
-          const dist = Math.sqrt((blob.cx - t.cx) ** 2 + (blob.cy - t.cy) ** 2)
-          if (dist < r * 2) {
-            t.cx = blob.cx
-            t.cy = blob.cy
-            t.area = blob.area
-            t.bbox = blob.bbox
-            t.missMs = 0
-            t.framesSeen++
-            t.lastSeen = now
-            const pw = blob.bbox[2] - blob.bbox[0] + 8
-            const ph = blob.bbox[3] - blob.bbox[1] + 8
-            t.patch = this.extractGrayRect(Math.round(blob.cx) - Math.floor(pw / 2), Math.round(blob.cy) - Math.floor(ph / 2), pw, ph)
-            t.patchW = pw
-            t.patchH = ph
-            adopted = true
-            break
-          }
+      let adopted = false
+      for (const t of missed) {
+        const dist = Math.sqrt((blob.cx - t.cx) ** 2 + (blob.cy - t.cy) ** 2)
+        if (dist < r * 2) {
+          t.cx = blob.cx
+          t.cy = blob.cy
+          t.area = entry.area
+          t.bbox = entry.bbox
+          t.missMs = 0
+          t.framesSeen++
+          t.lastSeen = now
+          t.patch = this.extractGrayRect(
+            Math.round(blob.cx) - Math.floor(blob.w / 2),
+            Math.round(blob.cy) - Math.floor(blob.h / 2),
+            blob.w + 8, blob.h + 8
+          )
+          t.patchW = blob.w + 8
+          t.patchH = blob.h + 8
+          adopted = true
+          break
         }
+      }
 
-        if (!adopted) {
-          this.insertEntry(blob, now)
-        }
+      if (!adopted) {
+        this.insertEntry(entry, now)
       }
     }
   }
@@ -441,6 +488,48 @@ export class BlobTracker {
       }
       return true
     })
+    const noise = this.table.filter(t => t.displayId === null)
+    if (noise.length > this.config.maxNoiseObjects) {
+      noise.sort((a, b) => b.framesSeen - a.framesSeen)
+      const toRemove = new Set(noise.slice(this.config.maxNoiseObjects).map(t => t.internalId))
+      this.table = this.table.filter(t => !toRemove.has(t.internalId))
+    }
+  }
+
+  private searchBright(
+    cx: number, cy: number, radius: number
+  ): { cx: number; cy: number; area: number; bbox: [number, number, number, number] } | null {
+    if (!this.binary) return null
+
+    const x0 = Math.max(0, Math.round(cx - radius))
+    const y0 = Math.max(0, Math.round(cy - radius))
+    const x1 = Math.min(this.imgW, Math.round(cx + radius))
+    const y1 = Math.min(this.imgH, Math.round(cy + radius))
+
+    let bestDist = Infinity
+    let bestX = -1, bestY = -1
+
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        if (this.binary[y * this.imgW + x]) {
+          const d = (x - cx) ** 2 + (y - cy) ** 2
+          if (d < bestDist) {
+            bestDist = d
+            bestX = x
+            bestY = y
+          }
+        }
+      }
+    }
+
+    if (bestX < 0) return null
+
+    return {
+      cx: bestX,
+      cy: bestY,
+      area: 1,
+      bbox: [bestX, bestY, bestX + 1, bestY + 1],
+    }
   }
 
   private searchAround(
@@ -471,9 +560,11 @@ export class BlobTracker {
 
     if (seedX < 0) return null
 
-    const visited = new Set<number>()
+    this._searchGen++
+    const gen = this._searchGen
+    const visited = this._searchVisited
     const startPx = seedY * this.imgW + seedX
-    visited.add(startPx)
+    visited[startPx] = gen
 
     const queue = [startPx]
     let sumX = 0, sumY = 0, count = 0
@@ -499,8 +590,8 @@ export class BlobTracker {
           const ny = y + dy
           if (nx < x0 || nx >= x1 || ny < y0 || ny >= y1) continue
           const npx = ny * this.imgW + nx
-          if (visited.has(npx) || !this.binary[npx]) continue
-          visited.add(npx)
+          if (visited[npx] === gen || !this.binary[npx]) continue
+          visited[npx] = gen
           queue.push(npx)
         }
       }
@@ -519,7 +610,7 @@ export class BlobTracker {
   private searchAroundRaw(
     cx: number, cy: number, radius: number, threshold: number
   ): { cx: number; cy: number; area: number; bbox: [number, number, number, number] } | null {
-    if (!this.rawPixels) return null
+    if (!this.gray) return null
 
     const x0 = Math.max(0, Math.round(cx - radius))
     const y0 = Math.max(0, Math.round(cy - radius))
@@ -531,8 +622,7 @@ export class BlobTracker {
 
     for (let y = y0; y < y1; y++) {
       for (let x = x0; x < x1; x++) {
-        const idx = (y * this.imgW + x) * 4
-        const brightness = (this.rawPixels[idx] + this.rawPixels[idx + 1] + this.rawPixels[idx + 2]) / 3
+        const brightness = this.gray[y * this.imgW + x]
         if (brightness > threshold) {
           const d = (x - cx) ** 2 + (y - cy) ** 2
           if (d < bestDist) {
@@ -546,9 +636,11 @@ export class BlobTracker {
 
     if (seedX < 0) return null
 
-    const visited = new Set<number>()
+    this._searchGen++
+    const gen = this._searchGen
+    const visited = this._searchVisited
     const startPx = seedY * this.imgW + seedX
-    visited.add(startPx)
+    visited[startPx] = gen
 
     const queue = [startPx]
     let sumX = 0, sumY = 0, count = 0
@@ -574,11 +666,9 @@ export class BlobTracker {
           const ny = y + dy
           if (nx < x0 || nx >= x1 || ny < y0 || ny >= y1) continue
           const npx = ny * this.imgW + nx
-          if (visited.has(npx)) continue
-          const idx = (ny * this.imgW + nx) * 4
-          const brightness = (this.rawPixels[idx] + this.rawPixels[idx + 1] + this.rawPixels[idx + 2]) / 3
-          if (brightness <= threshold) continue
-          visited.add(npx)
+          if (visited[npx] === gen) continue
+          if (this.gray![npx] <= threshold) continue
+          visited[npx] = gen
           queue.push(npx)
         }
       }
@@ -594,57 +684,19 @@ export class BlobTracker {
     }
   }
 
-  private floodFillFull(
-    startX: number, startY: number, visited: Uint8Array
-  ): { cx: number; cy: number; area: number; bbox: [number, number, number, number] } | null {
-    const startPx = startY * this.imgW + startX
-    visited[startPx] = 1
-
-    const queue = [startPx]
-    let sumX = 0, sumY = 0, count = 0
-    let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0
-
-    while (queue.length > 0) {
-      const px = queue.shift()!
-      const x = px % this.imgW
-      const y = (px - x) / this.imgW
-
-      sumX += x
-      sumY += y
-      count++
-      if (x < minX) minX = x
-      if (y < minY) minY = y
-      if (x > maxX) maxX = x
-      if (y > maxY) maxY = y
-
-      for (let dy = -1; dy <= 1; dy++) {
-        for (let dx = -1; dx <= 1; dx++) {
-          if (dx === 0 && dy === 0) continue
-          const nx = x + dx
-          const ny = y + dy
-          if (nx < 0 || nx >= this.imgW || ny < 0 || ny >= this.imgH) continue
-          const npx = ny * this.imgW + nx
-          if (visited[npx] || !this.binary![npx]) continue
-          visited[npx] = 1
-          queue.push(npx)
-        }
-      }
-    }
-
-    if (count === 0) return null
-
-    return {
-      cx: Math.round(sumX / count),
-      cy: Math.round(sumY / count),
-      area: count,
-      bbox: [minX, minY, maxX + 1, maxY + 1],
-    }
-  }
-
   private insertEntry(
     blob: { cx: number; cy: number; area: number; bbox: [number, number, number, number] },
     now: number
   ) {
+    const noise = this.table.filter(t => t.displayId === null)
+    if (noise.length >= this.config.maxNoiseObjects) {
+      let youngest = noise[0]
+      for (const n of noise) {
+        if (n.framesSeen < youngest.framesSeen) youngest = n
+      }
+      this.table = this.table.filter(t => t.internalId !== youngest.internalId)
+    }
+
     const pw = blob.bbox[2] - blob.bbox[0] + 8
     const ph = blob.bbox[3] - blob.bbox[1] + 8
     const px0 = Math.round(blob.cx) - Math.floor(pw / 2)
@@ -675,19 +727,24 @@ export class BlobTracker {
   }
 
   private initialScan(now: number) {
-    if (!this.binary) return
-    const visited = new Uint8Array(this.imgW * this.imgH)
+    if (!this.gray) return
 
-    for (let y = 0; y < this.imgH; y++) {
-      for (let x = 0; x < this.imgW; x++) {
-        const px = y * this.imgW + x
-        if (visited[px] || !this.binary[px]) continue
+    const blobs = this.blobFinder.nearbyBlobMerge({
+      threshold: 25,
+      mergeDistance: 0,
+      nmsDistance: 15,
+      minArea: this.config.minArea,
+      maxArea: this.config.maxArea,
+    })
 
-        const blob = this.floodFillFull(x, y, visited)
-        if (blob && blob.area >= this.config.minArea && blob.area <= this.config.maxArea) {
-          this.insertEntry(blob, now)
-        }
-      }
+    for (const blob of blobs) {
+      const bbox: [number, number, number, number] = [
+        Math.round(blob.cx - blob.w / 2),
+        Math.round(blob.cy - blob.h / 2),
+        Math.round(blob.cx + blob.w / 2),
+        Math.round(blob.cy + blob.h / 2),
+      ]
+      this.insertEntry({ cx: blob.cx, cy: blob.cy, area: blob.w * blob.h, bbox }, now)
     }
   }
 

@@ -102,13 +102,15 @@ function crc32(buf: Buffer): number {
 }
 
 const imgPath = process.argv[2]
-if (!imgPath) { console.error('Usage: npx tsx finderEval.ts <image.png>'); process.exit(1) }
+if (!imgPath) { console.error('Usage: npx tsx finderEval.ts <image.png> [grid]'); process.exit(1) }
+const mode = process.argv[3] || 'ab'
 
 const { pixels, w, h } = readPNG(path.resolve(imgPath))
 const finder = new BlobFinder({ minArea: 4, maxArea: 256 })
 finder.setImage(pixels, w, h)
 
 interface Run { name: string; fn: () => BlobCandidate[] }
+if (mode === 'ab') {
 const runs: Run[] = [
   { name: 'dilateAndFloodFill_default', fn: () => finder.dilateAndFloodFill() },
   { name: 'dilateAndFloodFill_tuned', fn: () => finder.dilateAndFloodFill({ threshold: 15, dilateRadius: 2, nmsDistance: 15 }) },
@@ -120,7 +122,7 @@ const runs: Run[] = [
   { name: 'nearbyBlobMerge_tuned', fn: () => finder.nearbyBlobMerge({ threshold: 15, mergeDistance: 8, nmsDistance: 15 }) },
 
   { name: 'dbscan_default', fn: () => finder.dbscan() },
-  { name: 'dbscan_tuned', fn: () => finder.dbscan({ threshold: 15, dbscanEps: 5, dbscanMinPts: 3, nmsDistance: 15 }) },
+  { name: 'dbscan_tuned', fn: () => finder.dbscan({ threshold: 20, dbscanEps: 5, dbscanMinPts: 3, nmsDistance: 15 }) },
 
   { name: 'gaussianBlurPeak_default', fn: () => finder.gaussianBlurPeak() },
   { name: 'gaussianBlurPeak_tuned', fn: () => finder.gaussianBlurPeak({ threshold: 15, blurRadius: 3, peakMinDistance: 5, nmsDistance: 10 }) },
@@ -175,3 +177,71 @@ for (const r of runs) {
   writePNG(outPath, annotated, w, h)
 }
 console.log(`Done. ${runs.length} images in ${dir}/`)
+} // end ab mode
+
+if (mode === 'grid') {
+  const thresholds = [20, 25, 30]
+  const mergeDistances = [0, 2, 5]
+  const nmsDistances = [15, 30, 50]
+
+  console.log('\n=== Grid Search: nearbyBlobMerge ===')
+  console.log(`thresholds: ${thresholds}  mergeDist: ${mergeDistances}  nmsDist: ${nmsDistances}`)
+  console.log()
+
+  const pW = 8
+  const header = '| ' + 'thresh'.padStart(pW) + ' | ' + 'merge'.padStart(pW) + ' | ' + 'nms'.padStart(pW) + ' | ' + 'ms'.padStart(pW) + ' | ' + 'pts'.padStart(pW) + ' | ' + 'drone'.padStart(pW) + ' | ' + 'best_dx'.padStart(pW) + ' | ' + 'best_dy'.padStart(pW) + ' | ' + 'best_w'.padStart(pW) + ' | ' + 'best_h'.padStart(pW) + ' |'
+  const sep = '| ' + Array(10).fill('-'.repeat(pW)).join(' | ') + ' |'
+  console.log(sep)
+  console.log(header)
+  console.log(sep)
+
+  const gridResults: Record<string, BlobCandidate[]> = {}
+
+  for (const t of thresholds) {
+    for (const m of mergeDistances) {
+      for (const n of nmsDistances) {
+        const t0 = performance.now()
+        const blobs = finder.nearbyBlobMerge({ threshold: t, mergeDistance: m, nmsDistance: n, maxArea: 500 })
+        const ms = performance.now() - t0
+
+        const key = `t${t}_m${m}_n${n}`
+        gridResults[key] = blobs
+
+        let droneHits = 0
+        let bestDx = 999, bestDy = 999, bestW = 0, bestH = 0
+        for (const b of blobs) {
+          const dx = Math.abs(b.cx - 188)
+          const dy = Math.abs(b.cy - 288)
+          if (dx < 30 && dy < 15) {
+            droneHits++
+            if (dx + dy < bestDx + bestDy) {
+              bestDx = dx; bestDy = dy; bestW = b.w; bestH = b.h
+            }
+          }
+        }
+
+        const droneStr = droneHits > 0 ? String(droneHits) : 'MISS'
+        const dxStr = droneHits > 0 ? String(bestDx) : '-'
+        const dyStr = droneHits > 0 ? String(bestDy) : '-'
+        const wStr = droneHits > 0 ? String(bestW) : '-'
+        const hStr = droneHits > 0 ? String(bestH) : '-'
+
+        console.log('| ' + String(t).padStart(pW) + ' | ' + String(m).padStart(pW) + ' | ' + String(n).padStart(pW) + ' | ' + ms.toFixed(1).padStart(pW) + ' | ' + String(blobs.length).padStart(pW) + ' | ' + droneStr.padStart(pW) + ' | ' + dxStr.padStart(pW) + ' | ' + dyStr.padStart(pW) + ' | ' + wStr.padStart(pW) + ' | ' + hStr.padStart(pW) + ' |')
+      }
+    }
+  }
+  console.log(sep)
+
+  const gridFile = path.join(path.dirname(path.resolve(imgPath)), 'finderGridResults.json')
+  fs.writeFileSync(gridFile, JSON.stringify(gridResults, null, 2))
+  console.log(`\nGrid results: ${gridFile}`)
+
+  console.log('\nWriting grid images...')
+  const dir = path.dirname(path.resolve(imgPath))
+  const baseName = path.basename(imgPath, path.extname(imgPath))
+  for (const [key, blobs] of Object.entries(gridResults)) {
+    const annotated = drawRects(pixels, w, h, blobs)
+    writePNG(path.join(dir, `${baseName}_grid_${key}.png`), annotated, w, h)
+  }
+  console.log(`Done. ${Object.keys(gridResults).length} images.`)
+} // end grid mode
