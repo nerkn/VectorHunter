@@ -2,12 +2,13 @@ import { useTelemetryStore } from '../store/telemetryStore'
 import { useTargetStore } from '../store/targetStore'
 import { useDroneStore } from '../store/droneStore'
 import { isRecording } from '../utils/recorder'
-import { useDetectionStore, PatchMethod } from '../store/detectionStore'
+import { useDetectionStore } from '../store/detectionStore'
+
+type PatchMethod = 'ncc' | 'xor'
 
 export default function HUD() {
   const position = useDroneStore(s => s.position)
   const mouseCaptured = useDroneStore(s => s.mouseCaptured)
-  const altitude = useTelemetryStore(s => s.altitude)
   const speed = useTelemetryStore(s => s.speed)
   const battery = useTelemetryStore(s => s.battery)
   const fps = useTelemetryStore(s => s.fps)

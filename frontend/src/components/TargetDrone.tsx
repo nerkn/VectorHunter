@@ -36,7 +36,6 @@ const CIRCLE_TURN_RATE = 0.5         // rad/s. At 11 m/s → radius 22m, diamete
 const FIGURE8_HALF_PERIOD = 2.5 // seconds for one lobe (full cycle = 10s)
 const LINE_HALF_LENGTH = 120
 
-const _dir = new THREE.Vector3()
 const _vel = new THREE.Vector3()
 
 const TargetDrone = forwardRef<THREE.Group, Props>(({ id, behavior, color, startPosition, speed }, fwdRef) => {
@@ -62,7 +61,6 @@ const TargetDrone = forwardRef<THREE.Group, Props>(({ id, behavior, color, start
     time.current += dt
 
     let turnRate = 0
-    let headingTarget = 0
     if (behavior === 'circle') {
       // Constant-turn circle: heading increases at fixed rate.
       // Speed = 11 m/s, turnRate = 0.5 → radius = 22m, circumference ≈ 138m, one lap ≈ 12.5s

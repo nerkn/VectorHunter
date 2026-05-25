@@ -54,6 +54,7 @@ export class BlobFinder {
   private _visitedBuf: Uint8Array = new Uint8Array(0)
   private _blurOut: Uint8Array = new Uint8Array(0)
   private _blurTemp: Float32Array = new Float32Array(0)
+  private _queueBuf: Int32Array = new Int32Array(0)
 
   constructor(config: Partial<BlobFinderConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
@@ -67,6 +68,7 @@ export class BlobFinder {
       this._visitedBuf = new Uint8Array(n)
       this._blurOut = new Uint8Array(n)
       this._blurTemp = new Float32Array(n)
+      this._queueBuf = new Int32Array(n)
     }
   }
 
@@ -391,22 +393,25 @@ export class BlobFinder {
   private floodFillAll(src: Uint8Array): BlobCandidate[] {
     this._visitedBuf.fill(0)
     const visited = this._visitedBuf
+    const queue = this._queueBuf
+    const w = this.w
     const blobs: BlobCandidate[] = []
 
     for (let y = 0; y < this.h; y++) {
       for (let x = 0; x < this.w; x++) {
-        const px = y * this.w + x
+        const px = y * w + x
         if (visited[px] || !src[px]) continue
 
         visited[px] = 1
-        const queue = [px]
+        let head = 0, tail = 1
+        queue[0] = px
         let sumX = 0, sumY = 0, count = 0
         let minX = x, minY = y, maxX = x, maxY = y
 
-        while (queue.length > 0) {
-          const cur = queue.shift()!
-          const cx = cur % this.w
-          const cy = (cur - cx) / this.w
+        while (head < tail) {
+          const cur = queue[head++]
+          const cx = cur % w
+          const cy = (cur - cx) / w
           sumX += cx
           sumY += cy
           count++
@@ -419,11 +424,11 @@ export class BlobFinder {
             for (let dx = -1; dx <= 1; dx++) {
               if (dx === 0 && dy === 0) continue
               const nx = cx + dx, ny = cy + dy
-              if (nx < 0 || nx >= this.w || ny < 0 || ny >= this.h) continue
-              const npx = ny * this.w + nx
+              if (nx < 0 || nx >= w || ny < 0 || ny >= this.h) continue
+              const npx = ny * w + nx
               if (visited[npx] || !src[npx]) continue
               visited[npx] = 1
-              queue.push(npx)
+              queue[tail++] = npx
             }
           }
         }
@@ -522,13 +527,12 @@ export class BlobFinder {
     if (blobs.length === 0) return []
     const sorted = blobs.sort((a, b) => b.confidence - a.confidence)
     const keep: BlobCandidate[] = []
-    const minDist = nmsDistance ?? this.config.nmsDistance
+    const minDist2 = (nmsDistance ?? this.config.nmsDistance) ** 2
 
     for (const blob of sorted) {
       let suppressed = false
       for (const k of keep) {
-        const dist = Math.sqrt((blob.cx - k.cx) ** 2 + (blob.cy - k.cy) ** 2)
-        if (dist < minDist) {
+        if ((blob.cx - k.cx) ** 2 + (blob.cy - k.cy) ** 2 < minDist2) {
           suppressed = true
           break
         }

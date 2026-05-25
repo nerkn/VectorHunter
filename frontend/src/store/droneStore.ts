@@ -62,8 +62,6 @@ export const useDroneStore = create<DroneState>((set, get) => ({
 
     const forwardX = -Math.sin(yaw)
     const forwardZ = -Math.cos(yaw)
-    const rightX = Math.cos(yaw)
-    const rightZ = -Math.sin(yaw)
 
     let ax = 0
     let az = 0

@@ -7,11 +7,11 @@ interface RecordedFrame {
 }
 
 interface Recording {
+  version: number
   params: {
     minArea: number
     maxArea: number
     threshold: number
-    gridSize: number
     detectionFps: number
   }
   frames: RecordedFrame[]
@@ -20,7 +20,7 @@ interface Recording {
 let recording: Recording | null = null
 
 export function startRecording(params: Recording['params']) {
-  recording = { params, frames: [] }
+  recording = { version: 101, params, frames: [] }
 }
 
 export function recordFrame(

@@ -1,5 +1,5 @@
 import { useRef, useMemo, useEffect } from 'react'
-import { useFrame, useThree } from '@react-three/fiber'
+import { useFrame } from '@react-three/fiber'
 import { Sky } from '@react-three/drei'
 import * as THREE from 'three'
 import { useDroneStore } from '../store/droneStore'
@@ -93,7 +93,7 @@ export default function Scene({ onFrames, paused }: { onFrames: (frames: Record<
           />
         )
       })}
-      <TargetCam targetRef={alphaRef} renderTarget={targetRT} />
+      <TargetCam targetRef={alphaRef as React.RefObject<THREE.Group>} renderTarget={targetRT} />
     </>
   )
 }

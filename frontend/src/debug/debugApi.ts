@@ -81,7 +81,6 @@ function floodFillBlob(binary: Uint8Array, w: number, h: number, startX: number,
   }
 }
 
-let debugMode = false
 const debugApi = {
   getState() {
     const game = useGameStore.getState()
@@ -148,7 +147,6 @@ const debugApi = {
         residualSpeed: Math.round(t.residualSpeed),
         highJerkFrames: t.highJerkFrames,
         avgArea: Math.round(t.avgArea),
-        patternScore: t.patternScore,
         hexCols: hex.split('\n')[0]?.length || 0,
         hexRows: hex.split('\n').length,
         hexFill: `${nonzero}/${flat.length}(${flat.length ? Math.round(nonzero / flat.length * 100) : 0}%)`,
@@ -256,7 +254,7 @@ const debugApi = {
             const tracked = useDetectionStore.getState().tracked
             const confirmed = tracked.filter(t => t.displayId !== null)
             const xor = debugApi.analyzeXor()
-            resolve(JSON.stringify({stepped: n, confirmed: confirmed.length, xorBlobs: xor.blobs.length}))
+            resolve(JSON.stringify({stepped: n, confirmed: confirmed.length, xorBlobs: xor.blobs?.length ?? 0}))
           }
         }, 50)
       } else {
@@ -341,7 +339,6 @@ const debugApi = {
   },
 
   setDebugMode(v: boolean) {
-    debugMode = v
     pipeline.setDebugMode(v)
   },
 
@@ -360,7 +357,6 @@ const debugApi = {
       const check = () => {
         const elapsed = performance.now() - startTime
         if (elapsed > timeout) {
-          debugMode = false
           pipeline.setDebugMode(false)
           useDroneStore.getState().setInput('forward', false)
           useDroneStore.getState().setInput('boost', false)
@@ -370,7 +366,6 @@ const debugApi = {
 
         const targets = useTargetStore.getState().targets.filter(t => t.active)
         if (targets.length === 0) {
-          debugMode = false
           pipeline.setDebugMode(false)
           resolve('TARGET DESTROYED in ' + Math.round(elapsed) + 'ms')
           return
@@ -408,7 +403,6 @@ const debugApi = {
 
   autoHunt(maxTimeMs?: number) {
     const timeout = maxTimeMs ?? 60000
-    debugMode = true
     pipeline.setDebugMode(true)
     useGameStore.getState().setPhase('playing')
 
@@ -422,7 +416,6 @@ const debugApi = {
       const STANCE_AREA = 400
 
       const done = (msg: string) => {
-        debugMode = false
         pipeline.setDebugMode(false)
         useDroneStore.getState().setInput('forward', false)
         useDroneStore.getState().setInput('boost', false)
@@ -611,7 +604,6 @@ const debugApi = {
         area: t.area,
         missMs: t.missMs,
         res: t.residualSpeed,
-        pat: t.patternScore ? Math.round(t.patternScore * 100) / 100 : 0,
         fill: t.hexFill,
       })),
       noise: noise.length,

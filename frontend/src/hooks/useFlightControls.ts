@@ -73,8 +73,8 @@ export function useFlightControls() {
 
       if (e.code === 'KeyR') {
         if (!isRecording()) {
-          const { minArea, maxArea, threshold, gridSize, detectionFps } = useDetectionStore.getState()
-          startRecording({ minArea, maxArea, threshold, gridSize, detectionFps })
+          const { minArea, maxArea, threshold, detectionFps } = useDetectionStore.getState()
+          startRecording({ minArea, maxArea, threshold, detectionFps })
         } else {
           const rec = stopRecording()
           if (rec) useDetectionStore.getState().setPlayback(rec)

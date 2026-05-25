@@ -26,35 +26,49 @@ function extractBlobHex(imageData: ImageData, bbox: [number, number, number, num
   return lines.join('\n')
 }
 
-function exportRecording(rec: Recording) {
+function saveGrayFrame(rec: Recording, idx: number) {
+  const fr = rec.frames[idx]
+  if (!fr) return
+  const w = fr.xorImage.width
+  const h = fr.xorImage.height
+  const gray = new Uint8Array(w * h)
+  for (let i = 0; i < w * h; i++) {
+    gray[i] = fr.xorImage.data[i * 4]
+  }
+  const filename = `frame_${String(idx).padStart(4, '0')}_${w}x${h}.gray`
+  fetch('/save-gray', {
+    method: 'POST',
+    headers: { 'x-filename': filename },
+    body: gray,
+  }).then(() => console.log('saved', filename))
+}
+
+function saveRecordingJson(rec: Recording) {
   const json = {
+    version: rec.version,
     params: rec.params,
     frames: rec.frames.map(f => ({
       time: f.time,
       tracked: f.tracked.map(t => ({
-        internalId: t.internalId,
-        displayId: t.displayId,
+        ...t,
         cx: Math.round(t.cx),
         cy: Math.round(t.cy),
         vx: Math.round(t.vx),
         vy: Math.round(t.vy),
-        area: t.area,
-        framesSeen: t.framesSeen,
         missMs: Math.round(t.missMs),
         residualSpeed: Math.round(t.residualSpeed),
-        highJerkFrames: t.highJerkFrames,
+        avgArea: Math.round(t.avgArea),
         blobHex: extractBlobHex(f.xorImage, t.bbox),
       })),
     })),
   }
-  console.log(JSON.stringify(json, null, 2))
-  const blob = new Blob([JSON.stringify(json, null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `recording_${Date.now()}.json`
-  a.click()
-  URL.revokeObjectURL(url)
+  const data = new TextEncoder().encode(JSON.stringify(json, null, 2))
+  const filename = `recording_${Date.now()}.json`
+  fetch('/save-gray', {
+    method: 'POST',
+    headers: { 'x-filename': filename },
+    body: data,
+  }).then(() => console.log('saved', filename))
 }
 
 interface Props {
@@ -65,6 +79,7 @@ interface Props {
 export default function Playback({ recording, onClose }: Props) {
   const [frameIdx, setFrameIdx] = useState(0)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const [hoverCoord, setHoverCoord] = useState<string>('')
   const total = recording.frames.length
   const frame = recording.frames[frameIdx]
 
@@ -121,7 +136,7 @@ export default function Playback({ recording, onClose }: Props) {
       <div style={{ position: 'absolute', top: 10, right: 10, cursor: 'pointer', fontSize: 20 }} onClick={onClose}>✕</div>
 
       <div style={{ fontSize: 12, marginBottom: 8 }}>
-        PARAMS: min={recording.params.minArea} max={recording.params.maxArea} thr={recording.params.threshold} grid={recording.params.gridSize} fps={recording.params.detectionFps}
+        PARAMS: min={recording.params.minArea} max={recording.params.maxArea} thr={recording.params.threshold} fps={recording.params.detectionFps}
       </div>
 
       <canvas
@@ -129,6 +144,19 @@ export default function Playback({ recording, onClose }: Props) {
         width={frame?.xorImage.width ?? 640}
         height={frame?.xorImage.height ?? 480}
         style={{ border: '1px solid #0f04', imageRendering: 'pixelated', cursor: 'crosshair' }}
+        onMouseMove={e => {
+          const r = e.currentTarget.getBoundingClientRect()
+          const sx = (e.currentTarget.width) / r.width
+          const sy = (e.currentTarget.height) / r.height
+          const px = Math.floor((e.clientX - r.left) * sx)
+          const py = Math.floor((e.clientY - r.top) * sy)
+          if (frame) {
+            const i = (py * frame.xorImage.width + px) * 4
+            const v = frame.xorImage.data[i]
+            setHoverCoord(`${px}x${py} v=${v}`)
+          }
+        }}
+        onMouseLeave={() => setHoverCoord('')}
       />
 
       <div style={{ marginTop: 8, display: 'flex', gap: 12, alignItems: 'center' }}>
@@ -136,7 +164,9 @@ export default function Playback({ recording, onClose }: Props) {
         <span style={{ fontSize: 12 }}>{frameIdx + 1} / {total}</span>
         <button onClick={() => setFrameIdx(Math.min(total - 1, frameIdx + 1))} style={btnStyle}>▶</button>
         <span style={{ fontSize: 10, color: '#0f08', marginLeft: 20 }}>← → arrow keys</span>
-        <button onClick={() => exportRecording(recording)} style={{ ...btnStyle, marginLeft: 20 }}>EXPORT JSON</button>
+        <span style={{ fontSize: 12, color: hoverCoord ? '#0ff' : '#0f04', marginLeft: 20, minWidth: 120 }}>{hoverCoord || 'hover for coords'}</span>
+        <button onClick={() => saveRecordingJson(recording)} style={{ ...btnStyle, marginLeft: 20 }}>SAVE JSON</button>
+        <button onClick={() => saveGrayFrame(recording, frameIdx)} style={{ ...btnStyle, marginLeft: 8 }}>SAVE IMAGE</button>
       </div>
 
       <div style={{ marginTop: 8, fontSize: 10, color: '#0f08', maxHeight: 200, overflowY: 'auto', width: 640 }}>
@@ -153,6 +183,6 @@ export default function Playback({ recording, onClose }: Props) {
 }
 
 const btnStyle: React.CSSProperties = {
-  background: '#111', color: '#0f0', border: '1px solid #0f04',
-  padding: '4px 16px', fontFamily: 'monospace', fontSize: 14, cursor: 'pointer',
+  background: '#004400', border: '1px solid #0f04', color: '#0f0',
+  padding: '4px 12px', fontFamily: 'monospace', fontSize: 12, cursor: 'pointer',
 }

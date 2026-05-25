@@ -1,8 +1,8 @@
 import { create } from 'zustand'
-import { TrackedBlob, BlobTracker, PatchMethod } from '../utils/blobTracker'
+import { TrackedBlob, BlobTracker } from '../utils/blobTracker'
 import { Recording } from '../utils/recorder'
 
-export type { PatchMethod }
+type PatchMethod = 'ncc' | 'xor'
 
 interface DetectionState {
   tracked: TrackedBlob[]

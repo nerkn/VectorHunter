@@ -12,6 +12,8 @@ export default function TargetOverlay({ isMainXor }: Props) {
 
   if (!isMainXor) return null
 
+  const clamp = (v: number, min = 0, max = 320) => Number.isFinite(v) ? Math.max(min, Math.min(max, v)) : min
+
   const confirmed = tracked.filter(t => t.displayId !== null && (performance.now() - t.lastSeen) < 200)
   const noiseBlobs = tracked.filter(t => t.displayId === null && (performance.now() - t.lastSeen) < 200)
 
@@ -24,8 +26,8 @@ export default function TargetOverlay({ isMainXor }: Props) {
       <svg width={320} height={180} style={{ position: 'absolute', top: 0, left: 0 }}>
         {noiseBlobs.map(t => (
           <rect key={t.internalId}
-            x={t.bbox[0] / 2} y={t.bbox[1] / 2}
-            width={(t.bbox[2] - t.bbox[0]) / 2} height={(t.bbox[3] - t.bbox[1]) / 2}
+            x={clamp(t.bbox[0] / 2)} y={clamp(t.bbox[1] / 2)}
+            width={clamp((t.bbox[2] - t.bbox[0]) / 2)} height={clamp((t.bbox[3] - t.bbox[1]) / 2)}
             stroke="#fff2" strokeWidth={0.5} fill="none"
           />
         ))}
@@ -38,8 +40,8 @@ export default function TargetOverlay({ isMainXor }: Props) {
           return (
             <g key={t.internalId}>
               <rect
-                x={t.bbox[0] / 2} y={t.bbox[1] / 2}
-                width={(t.bbox[2] - t.bbox[0]) / 2} height={(t.bbox[3] - t.bbox[1]) / 2}
+                x={clamp(t.bbox[0] / 2)} y={clamp(t.bbox[1] / 2)}
+                width={clamp((t.bbox[2] - t.bbox[0]) / 2)} height={clamp((t.bbox[3] - t.bbox[1]) / 2)}
                 stroke={isLocked ? '#f00' : '#ff0'} strokeWidth={isLocked ? 1.5 : 0.5} fill="none"
               />
               <line

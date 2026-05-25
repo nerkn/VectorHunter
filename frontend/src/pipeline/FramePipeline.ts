@@ -1,4 +1,4 @@
-import { BlobTracker, PatchMethod } from '../utils/blobTracker'
+import { BlobTracker } from '../utils/blobTracker'
 import { recordFrame } from '../utils/recorder'
 import { useDetectionStore } from '../store/detectionStore'
 import { useGameStore } from '../store/gameStore'
@@ -7,7 +7,6 @@ export class FramePipeline {
   private leftPx: Uint8Array = new Uint8Array(0)
   private rightPx: Uint8Array = new Uint8Array(0)
   private grayXor: Uint8Array = new Uint8Array(0)
-  private binary: Uint8Array = new Uint8Array(0)
 
   private w = 0
   private h = 0
@@ -37,7 +36,6 @@ export class FramePipeline {
 
   getTracker() { return this.tracker }
   getGrayXor() { return this.grayXor }
-  getBinary() { return this.binary }
   getWidth() { return this.w }
   getHeight() { return this.h }
 
@@ -48,7 +46,6 @@ export class FramePipeline {
       this.leftPx = new Uint8Array(n4)
       this.rightPx = new Uint8Array(n4)
       this.grayXor = new Uint8Array(n)
-      this.binary = new Uint8Array(n)
       this.w = w
       this.h = h
     }
@@ -73,7 +70,7 @@ export class FramePipeline {
     if (useDetectionStore.getState().playback) return
     if (useGameStore.getState().phase !== 'playing') return
 
-    const { detectionFps, threshold, minArea, maxArea, slowMode, patchMethod } = useDetectionStore.getState()
+    const { detectionFps, threshold, minArea, maxArea, slowMode } = useDetectionStore.getState()
     const effectiveFps = slowMode ? 1 : detectionFps
     const interval = this.debugMode ? 0 : (effectiveFps > 0 ? 1000 / effectiveFps : 1000)
     if (!this.debugMode && !slowMode && now - this.lastRun < interval) return
@@ -81,13 +78,9 @@ export class FramePipeline {
     this.dirty = false
     this.lastRun = now
 
-    for (let i = 0; i < this.w * this.h; i++) {
-      this.binary[i] = this.grayXor[i] > threshold ? 1 : 0
-    }
-
-    this.tracker.setGrayImage(this.binary, this.grayXor, this.w, this.h)
+    this.tracker.setGrayImage(this.grayXor, this.w, this.h, threshold)
     this.tracker.setAreaRange(minArea, maxArea)
-    const tracked = this.tracker.update(patchMethod)
+    const tracked = this.tracker.update()
 
     recordFrame(this.grayXor, this.w, this.h, tracked)
     useDetectionStore.getState().setDetectionResult(tracked)
