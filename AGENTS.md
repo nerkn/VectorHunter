@@ -7,3 +7,5 @@
 - No comments in code
 - No install packages
 - Be aware other files. dependencies, dont assume
+- When user says "propose": evaluate, answer, dont act, dont code!
+- See frontend/docs/tracking-system.md for tracker pipeline documentation

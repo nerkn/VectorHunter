@@ -10,7 +10,6 @@ export interface TrackedBlob {
   area: number
   bbox: [number, number, number, number]
   lastSeen: number
-  born: number
   framesSeen: number
   missMs: number
   residualSpeed: number
@@ -23,7 +22,6 @@ export interface TrackedBlob {
   refBlock: Uint8Array | null
   refBlockW: number
   refBlockH: number
-  _debug?: boolean
 }
 
 interface TrackerConfig {
@@ -70,10 +68,6 @@ export class BlobTracker {
   private blobFinder = new BlobFinder()
 
   private _coveredBuf: Uint8Array = new Uint8Array(0)
-  private _sliceHRef: Uint8Array = new Uint8Array(0)
-  private _sliceVRef: Uint8Array = new Uint8Array(0)
-  private _sliceHCand: Uint8Array = new Uint8Array(0)
-  private _sliceVCand: Uint8Array = new Uint8Array(0)
 
   constructor(config: Partial<TrackerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config }
@@ -91,8 +85,6 @@ export class BlobTracker {
       this._coveredBuf = new Uint8Array(n)
     }
   }
-
-  private frameCount = 0
 
   setAreaRange(min: number, max: number) {
     this.config.minArea = min
@@ -112,18 +104,15 @@ export class BlobTracker {
     const t0 = performance.now()
     this.verify(now, dt)
     const tVerify = performance.now()
-    this.deduplicate()
     this.detectNew(now)
     const tDetect = performance.now()
+    this.deduplicate()
+    const tDedup = performance.now()
     this.classify()
     this.expire()
     const tEnd = performance.now()
-    if (tEnd - t0 > 5) console.log(`tracker: verify=${(tVerify-t0).toFixed(1)}ms detectNew=${(tDetect-tVerify).toFixed(1)}ms total=${(tEnd-t0).toFixed(1)}ms objs=${this.table.length} withId=${this.table.filter(t=>t.displayId!==null).length}`)
+    if (tEnd - t0 > 5) console.log(`tracker: verify=${(tVerify-t0).toFixed(1)}ms detectNew=${(tDetect-tVerify).toFixed(1)}ms dedup=${(tDedup-tDetect).toFixed(1)}ms total=${(tEnd-t0).toFixed(1)}ms objs=${this.table.length} withId=${this.table.filter(t=>t.displayId!==null).length}`)
 
-    return this.table
-  }
-
-  getTracked(): TrackedBlob[] {
     return this.table
   }
 
@@ -183,58 +172,6 @@ export class BlobTracker {
     return sad
   }
 
-  findSliceMatchGrid(
-    predCx: number, predCy: number,
-    searchRadius: number,
-    halfW: number, halfH: number,
-    t: TrackedBlob | null
-  ): { x: number; y: number; sliceScore: number; blockSad: number }[] {
-    if (!this.gray) return []
-
-    const sliceLenH = halfW * 2 + 1
-    const sliceLenV = halfH * 2 + 1
-    if (this._sliceHRef.length < sliceLenH) this._sliceHRef = new Uint8Array(sliceLenH)
-    if (this._sliceVRef.length < sliceLenV) this._sliceVRef = new Uint8Array(sliceLenV)
-    if (this._sliceHCand.length < sliceLenH) this._sliceHCand = new Uint8Array(sliceLenH)
-    if (this._sliceVCand.length < sliceLenV) this._sliceVCand = new Uint8Array(sliceLenV)
-
-    const refH = this._sliceHRef
-    const refV = this._sliceVRef
-    const candH = this._sliceHCand
-    const candV = this._sliceVCand
-
-    if (t && t.refSliceH && t.refSliceV && t.refSliceH.length >= sliceLenH && t.refSliceV.length >= sliceLenV) {
-      refH.set(t.refSliceH.subarray(0, sliceLenH))
-      refV.set(t.refSliceV.subarray(0, sliceLenV))
-    } else {
-      this.extractSliceH(predCx, predCy, halfW, refH)
-      this.extractSliceV(predCx, predCy, halfH, refV)
-    }
-
-    const results: { x: number; y: number; sliceScore: number; blockSad: number }[] = []
-
-    const x0 = Math.max(0, Math.round(predCx - searchRadius))
-    const y0 = Math.max(0, Math.round(predCy - searchRadius))
-    const x1 = Math.min(this.imgW, Math.round(predCx + searchRadius))
-    const y1 = Math.min(this.imgH, Math.round(predCy + searchRadius))
-
-    for (let y = y0; y < y1; y++) {
-      for (let x = x0; x < x1; x++) {
-        if (this.gray![y * this.imgW + x] <= this.threshold) continue
-        this.extractSliceH(x, y, halfW, candH)
-        this.extractSliceV(x, y, halfH, candV)
-        const score = this.sliceSad(refH, candH) + this.sliceSad(refV, candV)
-        const bsad = (t && t.refBlock && t.refBlockW > 0 && t.refBlockH > 0)
-          ? this.blockSad(t.refBlock, t.refBlockW, t.refBlockH, this.gray!, this.imgW, this.imgH, x, y)
-          : -1
-        results.push({ x, y, sliceScore: score, blockSad: bsad })
-      }
-    }
-
-    results.sort((a, b) => a.sliceScore - b.sliceScore)
-    return results
-  }
-
   private findSliceMatch(
     predCx: number, predCy: number,
     searchRadius: number,
@@ -243,104 +180,32 @@ export class BlobTracker {
   ): { cx: number; cy: number; area: number; bbox: [number, number, number, number] } | null {
     if (!this.gray) return null
 
-    const sliceLenH = halfW * 2 + 1
-    const sliceLenV = halfH * 2 + 1
-    if (this._sliceHRef.length < sliceLenH) this._sliceHRef = new Uint8Array(sliceLenH)
-    if (this._sliceVRef.length < sliceLenV) this._sliceVRef = new Uint8Array(sliceLenV)
-    if (this._sliceHCand.length < sliceLenH) this._sliceHCand = new Uint8Array(sliceLenH)
-    if (this._sliceVCand.length < sliceLenV) this._sliceVCand = new Uint8Array(sliceLenV)
-
-    const refH = this._sliceHRef
-    const refV = this._sliceVRef
-    const candH = this._sliceHCand
-    const candV = this._sliceVCand
-
-    if (t && t.refSliceH && t.refSliceV && t.refSliceH.length >= sliceLenH && t.refSliceV.length >= sliceLenV) {
-      refH.set(t.refSliceH.subarray(0, sliceLenH))
-      refV.set(t.refSliceV.subarray(0, sliceLenV))
-    } else {
-      this.extractSliceH(predCx, predCy, halfW, refH)
-      this.extractSliceV(predCx, predCy, halfH, refV)
-    }
-
-    const candidates: { x: number; y: number; score: number }[] = []
-    const maxCandidates = 4
-    const candidateMargin = 0.2
-
-    const pcx = Math.round(predCx)
-    const pcy = Math.round(predCy)
     const x0 = Math.max(0, Math.round(predCx - searchRadius))
     const y0 = Math.max(0, Math.round(predCy - searchRadius))
     const x1 = Math.min(this.imgW, Math.round(predCx + searchRadius))
     const y1 = Math.min(this.imgH, Math.round(predCy + searchRadius))
 
-    const innerR = Math.min(searchRadius, 10)
-    let innerBest: { x: number; y: number; score: number } | null = null
-    let innerThreshold = 0
+    if (!t || !t.refBlock || t.refBlockW <= 0 || t.refBlockH <= 0) return null
+
+    let bestCx = predCx
+    let bestCy = predCy
+    let bestSad = Infinity
 
     for (let y = y0; y < y1; y++) {
       for (let x = x0; x < x1; x++) {
-        if ((x - pcx) * (x - pcx) + (y - pcy) * (y - pcy) > innerR * innerR) continue
         if (this.gray![y * this.imgW + x] <= this.threshold) continue
-        this.extractSliceH(x, y, halfW, candH)
-        this.extractSliceV(x, y, halfH, candV)
-        const score = this.sliceSad(refH, candH) + this.sliceSad(refV, candV)
-        if (!innerBest || score < innerBest.score) innerBest = { x, y, score }
-      }
-    }
-
-    if (innerBest) {
-      innerThreshold = innerBest.score * (1 + candidateMargin)
-      let useInner = true
-      if (t && t.refBlock && t.refBlockW > 0 && t.refBlockH > 0) {
-        const innerBlock = this.blockSad(t.refBlock, t.refBlockW, t.refBlockH, this.gray!, this.imgW, this.imgH, innerBest.x, innerBest.y)
-        const peakVal = this.gray![Math.min(this.imgH - 1, Math.max(0, innerBest.y)) * this.imgW + Math.min(this.imgW - 1, Math.max(0, innerBest.x))]
-        useInner = peakVal > this.threshold * 2 && innerBlock < (t.refBlockW * t.refBlockH * 40)
-      }
-      if (useInner) {
-        const result = this.computeCentroid(innerBest.x, innerBest.y, halfW, halfH)
-        if (result) return result
-      }
-    }
-
-    for (let y = y0; y < y1; y++) {
-      for (let x = x0; x < x1; x++) {
-        if ((x - pcx) * (x - pcx) + (y - pcy) * (y - pcy) <= innerR * innerR) continue
-        if (this.gray![y * this.imgW + x] <= this.threshold) continue
-        this.extractSliceH(x, y, halfW, candH)
-        this.extractSliceV(x, y, halfH, candV)
-        const score = this.sliceSad(refH, candH) + this.sliceSad(refV, candV)
-        candidates.push({ x, y, score })
-      }
-    }
-
-    if (innerBest && innerThreshold > 0) {
-      candidates.push(innerBest)
-    }
-
-    if (candidates.length === 0) return null
-
-    candidates.sort((a, b) => a.score - b.score)
-    const bestSliceScore = candidates[0].score
-    const scoreThreshold = bestSliceScore * (1 + candidateMargin)
-
-    let bestCx = candidates[0].x
-    let bestCy = candidates[0].y
-
-    if (candidates.length > 1 && t && t.refBlock && t.refBlockW > 0 && t.refBlockH > 0) {
-      const tied = candidates.filter(c => c.score <= scoreThreshold).slice(0, maxCandidates)
-      if (tied.length > 1) {
-        let bestBlockSad = Infinity
-        for (const c of tied) {
-          const bsad = this.blockSad(t.refBlock, t.refBlockW, t.refBlockH, this.gray!, this.imgW, this.imgH, c.x, c.y)
-          if (bsad < bestBlockSad) {
-            bestBlockSad = bsad
-            bestCx = c.x
-            bestCy = c.y
-          }
+        const sad = this.blockSad(t.refBlock, t.refBlockW, t.refBlockH, this.gray!, this.imgW, this.imgH, x, y)
+        if (sad < bestSad) {
+          bestSad = sad
+          bestCx = x
+          bestCy = y
         }
       }
     }
+
+    if (bestSad === Infinity) return null
+    const maxSad = t.refBlockW * t.refBlockH * 80
+    if (bestSad > maxSad) return null
 
     return this.computeCentroid(bestCx, bestCy, halfW, halfH)
   }
@@ -382,6 +247,90 @@ export class BlobTracker {
         Math.max(0, minY - pad),
         Math.min(this.imgW, maxX + 1 + pad),
         Math.min(this.imgH, maxY + 1 + pad),
+      ],
+    }
+  }
+
+  private findNearestBlob(cx: number, cy: number, radius: number, avgArea: number = 0): { cx: number; cy: number; area: number; bbox: [number, number, number, number] } | null {
+    if (!this.gray) return null
+
+    const x0 = Math.max(0, Math.round(cx - radius))
+    const y0 = Math.max(0, Math.round(cy - radius))
+    const x1 = Math.min(this.imgW, Math.round(cx + radius))
+    const y1 = Math.min(this.imgH, Math.round(cy + radius))
+
+    const blobThr = this.threshold * 1.5
+
+    const visited = new Uint8Array(this.imgW * this.imgH)
+    const queue = new Int32Array(this.imgW * this.imgH)
+    const blobs: { cx: number; cy: number; area: number; minX: number; minY: number; maxX: number; maxY: number }[] = []
+
+    for (let sy = y0; sy < y1; sy++) {
+      for (let sx = x0; sx < x1; sx++) {
+        const px = sy * this.imgW + sx
+        if (visited[px] || this.gray![px] <= blobThr) continue
+        visited[px] = 1
+        let head = 0, tail = 1
+        queue[0] = px
+        let sumX = 0, sumY = 0, count = 0
+        let minX = sx, minY = sy, maxX = sx, maxY = sy
+
+        while (head < tail) {
+          const cur = queue[head++]
+          const bx = cur % this.imgW
+          const by = (cur - bx) / this.imgW
+          sumX += bx
+          sumY += by
+          count++
+          if (bx < minX) minX = bx
+          if (by < minY) minY = by
+          if (bx > maxX) maxX = bx
+          if (by > maxY) maxY = by
+
+          for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+              if (dx === 0 && dy === 0) continue
+              const nx = bx + dx, ny = by + dy
+              if (nx < x0 || nx >= x1 || ny < y0 || ny >= y1) continue
+              const npx = ny * this.imgW + nx
+              if (visited[npx] || this.gray![npx] <= blobThr) continue
+              visited[npx] = 1
+              queue[tail++] = npx
+            }
+          }
+        }
+
+        if (count >= this.config.minArea) {
+          blobs.push({ cx: Math.round(sumX / count), cy: Math.round(sumY / count), area: count, minX, minY, maxX, maxY })
+        }
+      }
+    }
+
+    if (blobs.length === 0) return null
+
+    let best: typeof blobs[0] | null = null
+    let bestDist = Infinity
+    for (const b of blobs) {
+      const d2 = (b.cx - cx) ** 2 + (b.cy - cy) ** 2
+      if (d2 < bestDist) {
+        if (avgArea > 0 && (b.area < avgArea * 0.2 || b.area > avgArea * 5)) continue
+        bestDist = d2
+        best = b
+      }
+    }
+
+    if (!best) return null
+
+    const pad = 1
+    return {
+      cx: best.cx,
+      cy: best.cy,
+      area: best.area,
+      bbox: [
+        Math.max(0, best.minX - pad),
+        Math.max(0, best.minY - pad),
+        Math.min(this.imgW, best.maxX + 1 + pad),
+        Math.min(this.imgH, best.maxY + 1 + pad),
       ],
     }
   }
@@ -435,13 +384,14 @@ export class BlobTracker {
           this.extractSliceV(found.cx, found.cy, halfH, newSliceV)
           t.refSliceH = newSliceH
           t.refSliceV = newSliceV
-          const bw = halfW * 2 + 1
-          const bh = halfH * 2 + 1
+          const BLOCK_SIZE = 8
+          const bw = BLOCK_SIZE
+          const bh = BLOCK_SIZE
           const block = new Uint8Array(bw * bh)
           for (let dy = 0; dy < bh; dy++) {
             for (let dx = 0; dx < bw; dx++) {
-              const px = Math.round(found.cx - halfW + dx)
-              const py = Math.round(found.cy - halfH + dy)
+              const px = Math.round(found.cx - Math.floor(bw / 2) + dx)
+              const py = Math.round(found.cy - Math.floor(bh / 2) + dy)
               if (px < 0 || px >= this.imgW || py < 0 || py >= this.imgH) continue
               block[dy * bw + dx] = this.gray![py * this.imgW + px]
             }
@@ -456,12 +406,32 @@ export class BlobTracker {
           t.avgArea = t.avgArea * 0.9 + clampedArea * 0.1
         }
       } else {
-        t.cx = predCx
-        t.cy = predCy
-        t.missMs += dt * 1000
-        t.highJerkFrames++
-        t.vx *= 0.7
-        t.vy *= 0.7
+        const fallback = this.findNearestBlob(predCx, predCy, this.config.searchRadius, t.avgArea)
+        if (fallback) {
+          const rawVx = (fallback.cx - t.cx) / dt
+          const rawVy = (fallback.cy - t.cy) / dt
+          const a = this.config.velocitySmoothing
+          const maxVel = Math.max(500, t.area * 30)
+          const clampedRawVx = Math.max(-maxVel, Math.min(maxVel, rawVx))
+          const clampedRawVy = Math.max(-maxVel, Math.min(maxVel, rawVy))
+          t.vx = t.vx * (1 - a) + clampedRawVx * a
+          t.vy = t.vy * (1 - a) + clampedRawVy * a
+          t.cx = fallback.cx
+          t.cy = fallback.cy
+          t.area = fallback.area
+          t.bbox = fallback.bbox
+          t.missMs = 0
+          t.framesSeen++
+          t.lastSeen = now
+          t.highJerkFrames = 0
+        } else {
+          t.cx = predCx
+          t.cy = predCy
+          t.missMs += dt * 1000
+          t.highJerkFrames++
+          t.vx *= 0.7
+          t.vy *= 0.7
+        }
       }
     }
   }
@@ -564,11 +534,10 @@ export class BlobTracker {
       if (vys.length > 0) bgVy = vys.reduce((s, v) => s + v, 0) / vys.length
     }
 
-    this.frameCount++
-
     for (const t of this.table) {
-      const rvx = t.vx - bgVx
-      const rvy = t.vy - bgVy
+      const useRaw = t.area >= 10
+      const rvx = useRaw ? t.vx : (t.vx - bgVx)
+      const rvy = useRaw ? t.vy : (t.vy - bgVy)
       t.residualSpeed = Math.sqrt(rvx * rvx + rvy * rvy)
 
       if (t.residualSpeed > this.config.residualThreshold) {
@@ -576,7 +545,6 @@ export class BlobTracker {
         t.highResidualFrames++
       } else {
         t.lowResidualFrames++
-        t.highResidualFrames = Math.max(0, t.highResidualFrames - 1)
       }
     }
 
@@ -598,6 +566,7 @@ export class BlobTracker {
         if (t.displayId !== null) return false
         if (t.highResidualFrames < 5) return false
         if (t.framesSeen < 3) return false
+        if (t.area < 10) return false
         const jerkLimit = t.area < 10 ? this.config.jerkDemotionFrames * 3 : this.config.jerkDemotionFrames
         if (t.highJerkFrames >= jerkLimit) return false
         return true
@@ -650,6 +619,22 @@ export class BlobTracker {
       this.table = this.table.filter(t => t.internalId !== victim.internalId)
     }
 
+    const BLOCK_SIZE = 8
+    const bw = BLOCK_SIZE
+    const bh = BLOCK_SIZE
+    let block: Uint8Array | null = null
+    if (this.gray) {
+      block = new Uint8Array(bw * bh)
+      for (let dy = 0; dy < bh; dy++) {
+        for (let dx = 0; dx < bw; dx++) {
+          const px = Math.round(blob.cx - Math.floor(bw / 2) + dx)
+          const py = Math.round(blob.cy - Math.floor(bh / 2) + dy)
+          if (px < 0 || px >= this.imgW || py < 0 || py >= this.imgH) continue
+          block[dy * bw + dx] = this.gray[py * this.imgW + px]
+        }
+      }
+    }
+
     this.table.push({
       internalId: this.nextId++,
       displayId: null,
@@ -660,7 +645,6 @@ export class BlobTracker {
       area: blob.area,
       bbox: blob.bbox,
       lastSeen: now,
-      born: now,
       framesSeen: 1,
       missMs: 0,
       residualSpeed: 0,
@@ -670,9 +654,9 @@ export class BlobTracker {
       avgArea: blob.area,
       refSliceH: null,
       refSliceV: null,
-      refBlock: null,
-      refBlockW: 0,
-      refBlockH: 0,
+      refBlock: block,
+      refBlockW: bw,
+      refBlockH: bh,
     })
   }
 

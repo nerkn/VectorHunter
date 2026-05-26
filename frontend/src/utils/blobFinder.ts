@@ -1,3 +1,7 @@
+// Blob detection algorithms — each approach has different tradeoffs.
+// Only nearbyBlobMerge is currently used; others are available for experimentation.
+// Keep all implementations; they document the design space and can be swapped in.
+
 export interface BlobCandidate {
   cx: number
   cy: number
@@ -462,10 +466,10 @@ export class BlobFinder {
     const merged: BlobCandidate[] = []
 
     const bboxOf = (b: BlobCandidate) => ({
-      left: b.cx - Math.floor(b.w / 2),
-      right: b.cx + Math.floor(b.w / 2),
-      top: b.cy - Math.floor(b.h / 2),
-      bottom: b.cy + Math.floor(b.h / 2),
+      left: b.cx - Math.floor((b.w - 1) / 2),
+      right: b.cx + Math.floor((b.w - 1) / 2),
+      top: b.cy - Math.floor((b.h - 1) / 2),
+      bottom: b.cy + Math.floor((b.h - 1) / 2),
     })
 
     const shouldMerge = (a: BlobCandidate, b: BlobCandidate) => {

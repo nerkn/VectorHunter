@@ -71,6 +71,27 @@ function saveRecordingJson(rec: Recording) {
   }).then(() => console.log('saved', filename))
 }
 
+function saveAllFrames(rec: Recording) {
+  const w = rec.frames[0]?.xorImage.width ?? 640
+  const h = rec.frames[0]?.xorImage.height ?? 480
+  
+  for (let i = 0; i < rec.frames.length; i++) {
+    const fr = rec.frames[i]
+    const gray = new Uint8Array(w * h)
+    for (let j = 0; j < w * h; j++) {
+      gray[j] = fr.xorImage.data[j * 4]
+    }
+    const filename = `frame_${String(i).padStart(4, '0')}_${w}x${h}.gray`
+    fetch('/save-gray', {
+      method: 'POST',
+      headers: { 'x-filename': filename },
+      body: gray,
+    }).then(() => console.log('saved', filename))
+  }
+  
+  saveRecordingJson(rec)
+}
+
 interface Props {
   recording: Recording
   onClose: () => void
@@ -80,6 +101,7 @@ export default function Playback({ recording, onClose }: Props) {
   const [frameIdx, setFrameIdx] = useState(0)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [hoverCoord, setHoverCoord] = useState<string>('')
+  const [copiedFlash, setCopiedFlash] = useState(false)
   const total = recording.frames.length
   const frame = recording.frames[frameIdx]
 
@@ -143,7 +165,7 @@ export default function Playback({ recording, onClose }: Props) {
         ref={canvasRef}
         width={frame?.xorImage.width ?? 640}
         height={frame?.xorImage.height ?? 480}
-        style={{ border: '1px solid #0f04', imageRendering: 'pixelated', cursor: 'crosshair' }}
+        style={{ border: copiedFlash ? '2px solid #ff0' : '1px solid #0f04', imageRendering: 'pixelated', cursor: 'crosshair' }}
         onMouseMove={e => {
           const r = e.currentTarget.getBoundingClientRect()
           const sx = (e.currentTarget.width) / r.width
@@ -157,6 +179,16 @@ export default function Playback({ recording, onClose }: Props) {
           }
         }}
         onMouseLeave={() => setHoverCoord('')}
+        onClick={e => {
+          const r = e.currentTarget.getBoundingClientRect()
+          const sx = (e.currentTarget.width) / r.width
+          const sy = (e.currentTarget.height) / r.height
+          const px = Math.floor((e.clientX - r.left) * sx)
+          const py = Math.floor((e.clientY - r.top) * sy)
+          navigator.clipboard.writeText(`${px},${py}`)
+          setCopiedFlash(true)
+          setTimeout(() => setCopiedFlash(false), 200)
+        }}
       />
 
       <div style={{ marginTop: 8, display: 'flex', gap: 12, alignItems: 'center' }}>
@@ -167,6 +199,7 @@ export default function Playback({ recording, onClose }: Props) {
         <span style={{ fontSize: 12, color: hoverCoord ? '#0ff' : '#0f04', marginLeft: 20, minWidth: 120 }}>{hoverCoord || 'hover for coords'}</span>
         <button onClick={() => saveRecordingJson(recording)} style={{ ...btnStyle, marginLeft: 20 }}>SAVE JSON</button>
         <button onClick={() => saveGrayFrame(recording, frameIdx)} style={{ ...btnStyle, marginLeft: 8 }}>SAVE IMAGE</button>
+        <button onClick={() => saveAllFrames(recording)} style={{ ...btnStyle, marginLeft: 8 }}>SAVE ALL</button>
       </div>
 
       <div style={{ marginTop: 8, fontSize: 10, color: '#0f08', maxHeight: 200, overflowY: 'auto', width: 640 }}>
