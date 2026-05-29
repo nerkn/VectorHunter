@@ -43,4 +43,4 @@ coverage/
 dist/
 build/
 frontend/dist/
-backend/__pycache__/
+frontend/docs/frames/*

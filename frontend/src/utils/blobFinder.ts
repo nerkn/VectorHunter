@@ -111,7 +111,7 @@ export class BlobFinder {
     const cfg = { ...this.config, ...overrides }
     this.thresholdInto(this._thresholdBuf, cfg.threshold)
     const raw = this.floodFillAll(this._thresholdBuf)
-    return this.nms(this.areaFilter(this.mergeNearby(raw, cfg.mergeDistance), cfg), cfg.nmsDistance)
+    return this.nms(this.areaFilter(this.mergeNearby(raw, cfg.mergeDistance, cfg.maxArea), cfg), cfg.nmsDistance)
   }
 
   dbscan(overrides: Partial<BlobFinderConfig> = {}): BlobCandidate[] {
@@ -461,7 +461,7 @@ export class BlobFinder {
     })
   }
 
-  private mergeNearby(blobs: BlobCandidate[], maxGap: number): BlobCandidate[] {
+  private mergeNearby(blobs: BlobCandidate[], maxGap: number, maxArea: number = Infinity): BlobCandidate[] {
     const used = new Set<number>()
     const merged: BlobCandidate[] = []
 
@@ -500,6 +500,7 @@ export class BlobFinder {
           if (used.has(j)) continue
           if (shouldMerge(cur, blobs[j])) {
             const u = unionBbox(cur, blobs[j])
+            if (u.w * u.h > maxArea) continue
             cur = { cx: u.cx, cy: u.cy, w: u.w, h: u.h, confidence: Math.max(cur.confidence, blobs[j].confidence) }
             used.add(j)
             changed = true

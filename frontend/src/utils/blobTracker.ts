@@ -251,6 +251,7 @@ export class BlobTracker {
     }
   }
 
+
   private findNearestBlob(cx: number, cy: number, radius: number, avgArea: number = 0): { cx: number; cy: number; area: number; bbox: [number, number, number, number] } | null {
     if (!this.gray) return null
 
@@ -444,10 +445,20 @@ export class BlobTracker {
         if (toRemove.has(this.table[j].internalId)) continue
         const a = this.table[i]
         const b = this.table[j]
-        if ((a.cx - b.cx) ** 2 + (a.cy - b.cy) ** 2 < 25) {
-          const victim = a.framesSeen < b.framesSeen ? a : b
-          toRemove.add(victim.internalId)
-          if (victim.displayId !== null) this.releaseDisplayId(victim.displayId)
+        const dist2 = (a.cx - b.cx) ** 2 + (a.cy - b.cy) ** 2
+        if (dist2 > this.config.searchRadius ** 2) continue
+        const velDiff = Math.sqrt((a.vx - b.vx) ** 2 + (a.vy - b.vy) ** 2)
+        const avgSpeed = (Math.sqrt(a.vx ** 2 + a.vy ** 2) + Math.sqrt(b.vx ** 2 + b.vy ** 2)) / 2
+        if (velDiff > avgSpeed * 0.5 + 20) continue
+        const survivor = a.framesSeen >= b.framesSeen ? a : b
+        const victim = survivor === a ? b : a
+        toRemove.add(victim.internalId)
+        if (victim.displayId !== null) {
+          if (survivor.displayId === null) {
+            survivor.displayId = victim.displayId
+          } else {
+            this.releaseDisplayId(victim.displayId)
+          }
         }
       }
     }
@@ -561,13 +572,21 @@ export class BlobTracker {
       }
     }
 
+    for (const t of this.table) {
+      if (t.displayId !== null && t.area < this.config.minArea) {
+        this.releaseDisplayId(t.displayId)
+        t.displayId = null
+      }
+    }
+
     const candidates = this.table
       .filter(t => {
         if (t.displayId !== null) return false
         if (t.highResidualFrames < 5) return false
         if (t.framesSeen < 3) return false
-        if (t.area < 10) return false
-        const jerkLimit = t.area < 10 ? this.config.jerkDemotionFrames * 3 : this.config.jerkDemotionFrames
+        if (t.area < this.config.minArea) return false
+        if (Math.abs(t.vx) + Math.abs(t.vy) < 1) return false
+        const jerkLimit = t.area < this.config.minArea ? this.config.jerkDemotionFrames * 3 : this.config.jerkDemotionFrames
         if (t.highJerkFrames >= jerkLimit) return false
         return true
       })
