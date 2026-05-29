@@ -3,6 +3,7 @@ import { useTargetStore } from '../store/targetStore'
 import { useDroneStore } from '../store/droneStore'
 import { isRecording } from '../utils/recorder'
 import { useDetectionStore } from '../store/detectionStore'
+import { StrategyName } from '../strategy/types'
 
 type PatchMethod = 'ncc' | 'xor'
 
@@ -26,6 +27,8 @@ export default function HUD() {
   const setPatchMethod = useDetectionStore(s => s.setPatchMethod)
   const slowMode = useDetectionStore(s => s.slowMode)
   const toggleSlowMode = useDetectionStore(s => s.toggleSlowMode)
+  const strategy = useDetectionStore(s => s.strategy)
+  const setStrategy = useDetectionStore(s => s.setStrategy)
 
   const batteryColor = battery > 50 ? '#0f0' : battery > 20 ? '#fa0' : '#f00'
   const signalColor = signal > 60 ? '#0f0' : signal > 30 ? '#fa0' : '#f00'
@@ -56,6 +59,22 @@ export default function HUD() {
         maxHeight: 300, display: 'flex', flexDirection: 'column',
       }}>
         <div style={{ fontWeight: 'bold', marginBottom: 4 }}>DETECTION</div>
+        <div>
+          STRAT <span style={{ float: 'right' }}>
+            {(['default', 'flow', 'hybrid', 'drift'] as StrategyName[]).map(v => (
+              <span
+                key={v}
+                onClick={() => setStrategy(v)}
+                style={{
+                  cursor: 'pointer', marginLeft: 5,
+                  color: strategy === v ? '#0f0' : '#ff04',
+                  fontWeight: strategy === v ? 'bold' : 'normal',
+                  fontSize: 8,
+                }}
+              >{v.slice(0, 4)}</span>
+            ))}
+          </span>
+        </div>
         <div>TRACKED <span style={{ float: 'right' }}>{tracked.length}</span></div>
         <div>
           MIN <span style={{ float: 'right' }}>

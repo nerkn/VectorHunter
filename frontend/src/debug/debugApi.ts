@@ -5,6 +5,7 @@ import { useTargetStore } from '../store/targetStore'
 import { useFlightDirector } from '../store/flightDirector'
 import { startRecording, stopRecording } from '../utils/recorder'
 import { pipeline } from '../pipeline/FramePipeline'
+import { StrategyName } from '../strategy/types'
 
 declare global {
   interface Window {
@@ -523,6 +524,10 @@ const debugApi = {
 
   setPatchMethod(method: 'ncc' | 'xor') {
     useDetectionStore.getState().setPatchMethod(method)
+  },
+
+  setStrategy(name: StrategyName) {
+    useDetectionStore.getState().setStrategy(name)
   },
 
   startRecording() { startRecording(useDetectionStore.getState() as any) },

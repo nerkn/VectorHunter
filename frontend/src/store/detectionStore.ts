@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { TrackedBlob, BlobTracker } from '../utils/blobTracker'
 import { Recording } from '../utils/recorder'
+import { StrategyName, DetectionStrategy } from '../strategy/types'
 
 type PatchMethod = 'ncc' | 'xor'
 
@@ -12,11 +13,17 @@ interface DetectionState {
   detectionFps: number
   lockedTarget: number | null
   tracker: BlobTracker | null
+  strategy: StrategyName
+  strategyImpl: DetectionStrategy | null
+  bgVx: number
+  bgVy: number
   playback: Recording | null
   patchMethod: PatchMethod
   slowMode: boolean
-  setDetectionResult: (tracked: TrackedBlob[]) => void
+  setDetectionResult: (tracked: TrackedBlob[], bgVx?: number, bgVy?: number) => void
   setTracker: (tracker: BlobTracker) => void
+  setStrategy: (name: StrategyName) => void
+  setStrategyImpl: (impl: DetectionStrategy) => void
   setPlayback: (rec: Recording | null) => void
   setThreshold: (val: number) => void
   setMinArea: (val: number) => void
@@ -35,12 +42,18 @@ export const useDetectionStore = create<DetectionState>((set) => ({
   detectionFps: 16,
   lockedTarget: null,
   tracker: null,
+  strategy: 'default' as StrategyName,
+  strategyImpl: null,
+  bgVx: 0,
+  bgVy: 0,
   playback: null,
   patchMethod: 'xor',
   slowMode: false,
   setPlayback: (rec) => set({ playback: rec }),
-  setDetectionResult: (tracked) => set({ tracked }),
+  setDetectionResult: (tracked, bgVx, bgVy) => set({ tracked, ...(bgVx !== undefined ? { bgVx } : {}), ...(bgVy !== undefined ? { bgVy } : {}) }),
   setTracker: (tracker) => set({ tracker }),
+  setStrategy: (name) => set({ strategy: name }),
+  setStrategyImpl: (impl) => set({ strategyImpl: impl }),
   setThreshold: (val) => set({ threshold: val }),
   setMinArea: (val) => set({ minArea: val }),
   setMaxArea: (val) => set({ maxArea: val }),

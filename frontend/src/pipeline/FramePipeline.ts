@@ -2,6 +2,8 @@ import { BlobTracker } from '../utils/blobTracker'
 import { recordFrame } from '../utils/recorder'
 import { useDetectionStore } from '../store/detectionStore'
 import { useGameStore } from '../store/gameStore'
+import { createStrategy } from '../strategy'
+import { DetectionStrategy } from '../strategy/types'
 
 export class FramePipeline {
   private leftPx: Uint8Array = new Uint8Array(0)
@@ -16,6 +18,8 @@ export class FramePipeline {
   private lastRun = 0
 
   private tracker = new BlobTracker()
+  private activeStrategy: DetectionStrategy | null = null
+  private currentStrategyName: string = ''
 
   private debugMode = false
 
@@ -70,13 +74,28 @@ export class FramePipeline {
     if (useDetectionStore.getState().playback) return
     if (useGameStore.getState().phase !== 'playing') return
 
-    const { detectionFps, threshold, minArea, maxArea, slowMode } = useDetectionStore.getState()
+    const { detectionFps, threshold, minArea, maxArea, slowMode, strategy } = useDetectionStore.getState()
     const effectiveFps = slowMode ? 1 : detectionFps
     const interval = this.debugMode ? 0 : (effectiveFps > 0 ? 1000 / effectiveFps : 1000)
     if (!this.debugMode && !slowMode && now - this.lastRun < interval) return
     if (!this.dirty) return
     this.dirty = false
     this.lastRun = now
+
+    if (strategy !== 'default' && strategy !== this.currentStrategyName) {
+      this.currentStrategyName = strategy
+      this.activeStrategy = createStrategy(strategy)
+      useDetectionStore.getState().setStrategyImpl(this.activeStrategy)
+    }
+
+    if (this.activeStrategy && strategy !== 'default') {
+      this.activeStrategy.setGrayImage(this.grayXor, this.w, this.h, threshold)
+      this.activeStrategy.setAreaRange(minArea, maxArea)
+      const result = this.activeStrategy.update()
+      recordFrame(this.grayXor, this.w, this.h, result.tracked)
+      useDetectionStore.getState().setDetectionResult(result.tracked, result.bgVx, result.bgVy)
+      return
+    }
 
     this.tracker.setGrayImage(this.grayXor, this.w, this.h, threshold)
     this.tracker.setAreaRange(minArea, maxArea)

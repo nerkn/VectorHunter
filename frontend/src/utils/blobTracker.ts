@@ -251,7 +251,6 @@ export class BlobTracker {
     }
   }
 
-
   private findNearestBlob(cx: number, cy: number, radius: number, avgArea: number = 0): { cx: number; cy: number; area: number; bbox: [number, number, number, number] } | null {
     if (!this.gray) return null
 
@@ -531,24 +530,20 @@ export class BlobTracker {
   }
 
   private classify() {
-    const noise = this.table.filter(t => t.displayId === null && t.framesSeen >= 5 && t.area >= 10)
+    const allTracks = this.table.filter(t => t.framesSeen >= 2)
     let bgVx = 0, bgVy = 0
 
-    if (noise.length >= 2) {
-      let vxs = noise.map(t => t.vx)
-      let vys = noise.map(t => t.vy)
-      let meanVx = vxs.reduce((s, v) => s + v, 0) / vxs.length
-      let meanVy = vys.reduce((s, v) => s + v, 0) / vys.length
-      vxs = vxs.filter(v => Math.abs(v - meanVx) < Math.abs(meanVx) * 0.8 + 10)
-      vys = vys.filter(v => Math.abs(v - meanVy) < Math.abs(meanVy) * 0.8 + 10)
-      if (vxs.length > 0) bgVx = vxs.reduce((s, v) => s + v, 0) / vxs.length
-      if (vys.length > 0) bgVy = vys.reduce((s, v) => s + v, 0) / vys.length
+    if (allTracks.length >= 3) {
+      const vxs = allTracks.map(t => t.vx).sort((a, b) => a - b)
+      const vys = allTracks.map(t => t.vy).sort((a, b) => a - b)
+      const mid = Math.floor(vxs.length / 2)
+      bgVx = vxs.length % 2 === 0 ? (vxs[mid - 1] + vxs[mid]) / 2 : vxs[mid]
+      bgVy = vys.length % 2 === 0 ? (vys[mid - 1] + vys[mid]) / 2 : vys[mid]
     }
 
     for (const t of this.table) {
-      const useRaw = t.area >= 10
-      const rvx = useRaw ? t.vx : (t.vx - bgVx)
-      const rvy = useRaw ? t.vy : (t.vy - bgVy)
+      const rvx = t.vx - bgVx
+      const rvy = t.vy - bgVy
       t.residualSpeed = Math.sqrt(rvx * rvx + rvy * rvy)
 
       if (t.residualSpeed > this.config.residualThreshold) {
@@ -603,6 +598,10 @@ export class BlobTracker {
 
   private expire() {
     this.table = this.table.filter(t => {
+      if (t.cx < -50 || t.cy < -50 || t.cx > this.imgW + 50 || t.cy > this.imgH + 50) {
+        if (t.displayId !== null) this.releaseDisplayId(t.displayId)
+        return false
+      }
       const maxMs = t.displayId !== null ? this.config.maxMissingMs * 2 : this.config.maxMissingMs
       if (t.missMs > maxMs) {
         if (t.displayId !== null) this.releaseDisplayId(t.displayId)
