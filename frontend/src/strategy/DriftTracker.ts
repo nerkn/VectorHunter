@@ -53,13 +53,13 @@ export class DriftTracker implements DetectionStrategy {
   private maxMissingMs = 500
   private confidenceStart = 20
   private promoteSmalToBg = 5
+  private minPromoteArea = 50
   private promoteBgToTarget = 3
   private demoteTargetThreshold = 60
   private smalMergeBgArea = 20
-  private distanceWeight = 0.3
   private residualThreshold = 25
   private historyLen = 10
-  private maxNoiseObjects = 20
+  private maxSmal = 20
 
   private debug = false
   private frameIdx = 0
@@ -86,10 +86,9 @@ export class DriftTracker implements DetectionStrategy {
     if (this.blobs.length === 0) {
       this.initialScan()
     } else {
-      this.computeDraftVel()
-      this.matchTargets()
-      this.checkOutliers()
-      this.scanRemaining()
+      this.computeBgVel()
+      this.matchAll()
+      this.scanGrid()
       this.merge()
       this.typeTransitions()
       this.expire()
@@ -112,178 +111,77 @@ export class DriftTracker implements DetectionStrategy {
     this.grid.fill(false)
   }
 
-  private computeDraftVel() {
-    const longBg = this.blobs.filter(b => {
-      if (b.type !== 'bg' || b.framesSeen < 5 || b.positionHistory.length < 3) return false
-      const hist = b.positionHistory
-      const first = hist[0]
-      const last = hist[hist.length - 1]
-      const disp = Math.sqrt((last.cx - first.cx) ** 2 + (last.cy - first.cy) ** 2)
-      return disp < 20
-    })
-    if (longBg.length === 0) {
-      const longSmal = this.blobs.filter(b => b.type === 'smal' && b.framesSeen >= 5 && b.positionHistory.length >= 3)
-      if (longSmal.length >= 3) {
-        const vel = longSmal.map(b => b.vx).sort((a, b) => a - b)
-        const velY = longSmal.map(b => b.vy).sort((a, b) => a - b)
-        const m = Math.floor(vel.length / 2)
-        this.bgVx = vel.length % 2 === 0 ? (vel[m - 1] + vel[m]) / 2 : vel[m]
-        this.bgVy = velY.length % 2 === 0 ? (velY[m - 1] + velY[m]) / 2 : velY[m]
-      }
-      return
-    }
+  private computeBgVel() {
+    const stable = this.blobs.filter(b =>
+      (b.type === 'bg' || b.type === 'smal') && b.missMs === 0 && b.positionHistory.length >= 2
+    )
+    if (stable.length < 3) return
 
-    const velocities = longBg.map(b => {
-      const hist = b.positionHistory
-      const last = hist[hist.length - 1]
-      const prev = hist[Math.max(0, hist.length - 3)]
-      const d = hist.length - Math.max(0, hist.length - 3)
-      return { vx: (last.cx - prev.cx) / (d * this.dt), vy: (last.cy - prev.cy) / (d * this.dt), id: b.id }
+    const vels = stable.map(b => {
+      const h = b.positionHistory
+      const prev = h[h.length - 2]
+      const last = h[h.length - 1]
+      return { vx: (last.cx - prev.cx) / this.dt, vy: (last.cy - prev.cy) / this.dt }
     })
 
-    const medVx = median(velocities.map(v => v.vx))
-    const medVy = median(velocities.map(v => v.vy))
-    const mad = median(velocities.map(v => Math.abs(v.vx - medVx) + Math.abs(v.vy - medVy)))
-    const outlierThreshold = Math.max(mad * 3, 30)
+    const medVx = median(vels.map(v => v.vx))
+    const medVy = median(vels.map(v => v.vy))
+    const mad = median(vels.map(v => Math.abs(v.vx - medVx) + Math.abs(v.vy - medVy)))
+    const cutoff = Math.max(mad * 3, 30)
 
-    const inliers = velocities.filter(v =>
-      Math.abs(v.vx - medVx) + Math.abs(v.vy - medVy) < outlierThreshold
+    const inliers = vels.filter(v =>
+      Math.abs(v.vx - medVx) + Math.abs(v.vy - medVy) <= cutoff
     )
 
-    if (inliers.length >= 2) {
-      this.bgVx = median(inliers.map(v => v.vx))
-      this.bgVy = median(inliers.map(v => v.vy))
-    } else {
-      this.bgVx = medVx
-      this.bgVy = medVy
-    }
+    this.bgVx = inliers.length >= 2 ? median(inliers.map(v => v.vx)) : medVx
+    this.bgVy = inliers.length >= 2 ? median(inliers.map(v => v.vy)) : medVy
   }
 
-  private matchTargets() {
-    const targets = this.blobs.filter(b => b.type === 'target')
-    for (const t of targets) {
-      const predCx = t.cx + t.vx * this.dt - this.bgVx * this.dt
-      const predCy = t.cy + t.vy * this.dt - this.bgVy * this.dt
+  private matchAll() {
+    const used = new Set<number>()
+    const order: BlobType[] = ['target', 'bg', 'smal']
 
-      if (t.snapshot && t.snapshotW > 0 && t.snapshotH > 0) {
-        const match = this.findSnapshotMatch(predCx, predCy, t.snapshot, t.snapshotW, t.snapshotH, 30)
-        if (match) {
-          const rawVx = (match.cx - t.cx) / this.dt
-          const rawVy = (match.cy - t.cy) / this.dt
-          t.vx = t.vx * 0.5 + rawVx * 0.5
-          t.vy = t.vy * 0.5 + rawVy * 0.5
-          t.cx = match.cx
-          t.cy = match.cy
-          t.area = match.area
-          t.w = match.w
-          t.h = match.h
-          t.bbox = match.bbox
-          t.missMs = 0
-          t.framesSeen++
-          t.lastSeen = performance.now()
-          this.updateSnapshot(t)
-          this.pushHistory(t)
-          t.confidence = Math.min(100, t.confidence + 5)
-          continue
+    for (const type of order) {
+      for (const b of this.blobs) {
+        if (b.type !== type) continue
+        const predCx = b.cx + b.vx * this.dt
+        const predCy = b.cy + b.vy * this.dt
+        const radius = type === 'target' ? 20 : type === 'bg' ? 15 : 10
+
+        const centroid = this.findCentroidNear(predCx, predCy, radius, used)
+        if (centroid) {
+          used.add(centroid.tag)
+          const rawVx = (centroid.cx - b.cx) / this.dt
+          const rawVy = (centroid.cy - b.cy) / this.dt
+          const smooth = type === 'target' ? 0.5 : 0.7
+          b.vx = b.vx * smooth + rawVx * (1 - smooth)
+          b.vy = b.vy * smooth + rawVy * (1 - smooth)
+          b.cx = centroid.cx
+          b.cy = centroid.cy
+          b.area = centroid.area
+          b.w = centroid.w
+          b.h = centroid.h
+          b.bbox = centroid.bbox
+          b.missMs = 0
+          b.framesSeen++
+          b.lastSeen = performance.now()
+          this.updateSnapshot(b)
+          this.pushHistory(b)
+          if (type === 'target') b.confidence = Math.min(100, b.confidence + 5)
+        } else {
+          b.cx += b.vx * this.dt
+          b.cy += b.vy * this.dt
+          b.missMs += this.dt * 1000
+          b.vx *= 0.7
+          b.vy *= 0.7
+          if (type === 'smal') b.confidence = Math.max(0, b.confidence - 5)
+          if (type === 'target') b.confidence = Math.max(0, b.confidence - 10)
         }
       }
-
-      const centroid = this.findCentroidNear(predCx, predCy, 20)
-      if (centroid) {
-        const rawVx = (centroid.cx - t.cx) / this.dt
-        const rawVy = (centroid.cy - t.cy) / this.dt
-        t.vx = t.vx * 0.5 + rawVx * 0.5
-        t.vy = t.vy * 0.5 + rawVy * 0.5
-        t.cx = centroid.cx
-        t.cy = centroid.cy
-        t.area = centroid.area
-        t.w = centroid.bbox[2] - centroid.bbox[0]
-        t.h = centroid.bbox[3] - centroid.bbox[1]
-        t.bbox = centroid.bbox
-        t.missMs = 0
-        t.framesSeen++
-        t.lastSeen = performance.now()
-        this.updateSnapshot(t)
-        this.pushHistory(t)
-        t.confidence = Math.min(100, t.confidence + 2)
-        continue
-      }
-
-      t.cx += t.vx * this.dt
-      t.cy += t.vy * this.dt
-      t.missMs += this.dt * 1000
-      t.vx *= 0.7
-      t.vy *= 0.7
-      t.confidence = Math.max(0, t.confidence - 10)
-    }
-
-    const bgBlobs = this.blobs.filter(b => b.type === 'bg')
-    for (const b of bgBlobs) {
-      const predCx = b.cx + b.vx * this.dt
-      const predCy = b.cy + b.vy * this.dt
-      const centroid = this.findCentroidNear(predCx, predCy, 15)
-      if (centroid) {
-        const rawVx = (centroid.cx - b.cx) / this.dt
-        const rawVy = (centroid.cy - b.cy) / this.dt
-        b.vx = b.vx * 0.7 + rawVx * 0.3
-        b.vy = b.vy * 0.7 + rawVy * 0.3
-        b.cx = centroid.cx
-        b.cy = centroid.cy
-        b.area = centroid.area
-        b.w = centroid.bbox[2] - centroid.bbox[0]
-        b.h = centroid.bbox[3] - centroid.bbox[1]
-        b.bbox = centroid.bbox
-        b.missMs = 0
-        b.framesSeen++
-        b.lastSeen = performance.now()
-        this.pushHistory(b)
-      } else {
-        b.cx += b.vx * this.dt
-        b.cy += b.vy * this.dt
-        b.missMs += this.dt * 1000
-        b.vx *= 0.7
-        b.vy *= 0.7
-      }
     }
   }
 
-  private checkOutliers() {
-    const smals = this.blobs.filter(b => b.type === 'smal' && b.missMs === 0)
-    for (const s of smals) {
-      const predCx = s.cx + s.vx * this.dt
-      const predCy = s.cy + s.vy * this.dt
-      const centroid = this.findCentroidNear(predCx, predCy, 10)
-      if (centroid) {
-        const rawVx = (centroid.cx - s.cx) / this.dt
-        const rawVy = (centroid.cy - s.cy) / this.dt
-        s.vx = s.vx * 0.5 + rawVx * 0.5
-        s.vy = s.vy * 0.5 + rawVy * 0.5
-        s.cx = centroid.cx
-        s.cy = centroid.cy
-        s.area = centroid.area
-        s.w = centroid.bbox[2] - centroid.bbox[0]
-        s.h = centroid.bbox[3] - centroid.bbox[1]
-        s.bbox = centroid.bbox
-        s.missMs = 0
-        s.framesSeen++
-        s.lastSeen = performance.now()
-        this.pushHistory(s)
-      } else {
-        s.cx += s.vx * this.dt
-        s.cy += s.vy * this.dt
-        s.missMs += this.dt * 1000
-        s.vx *= 0.7
-        s.vy *= 0.7
-      }
-    }
-
-    const unmatched = this.blobs.filter(b => b.type === 'smal' && b.missMs > 0)
-    for (const s of unmatched) {
-      s.confidence = Math.max(0, s.confidence - 5)
-    }
-  }
-
-  private scanRemaining() {
+  private scanGrid() {
     this.grid.fill(false)
     for (const b of this.blobs) {
       this.markGrid(b)
@@ -313,16 +211,10 @@ export class DriftTracker implements DetectionStrategy {
       for (let i = smals.length - 1; i >= 0; i--) {
         const s = smals[i]
         if (remove.has(s.id)) continue
-        if (this.overlaps(bg.bbox, s.bbox)) {
-          bg.area += s.area
-          bg.w = Math.max(bg.w, s.w)
-          bg.h = Math.max(bg.h, s.h)
-          bg.bbox = unionBbox(bg.bbox, s.bbox)
-          bg.cx = Math.round((bg.cx + s.cx) / 2)
-          bg.cy = Math.round((bg.cy + s.cy) / 2)
-          remove.add(s.id)
-          smals.splice(i, 1)
-        }
+        if (!this.overlaps(bg.bbox, s.bbox)) continue
+        this.absorb(bg, s)
+        remove.add(s.id)
+        smals.splice(i, 1)
       }
     }
 
@@ -330,22 +222,41 @@ export class DriftTracker implements DetectionStrategy {
       if (remove.has(smals[i].id)) continue
       for (let j = i + 1; j < smals.length; j++) {
         if (remove.has(smals[j].id)) continue
-        if (this.overlaps(smals[i].bbox, smals[j].bbox)) {
-          const a = smals[i], b = smals[j]
-          const mergedArea = a.area + b.area
-          const nb = this.mergeInto(a, b)
-          if (mergedArea >= this.smalMergeBgArea) {
-            nb.type = 'bg'
-            nb.confidence = (a.confidence + b.confidence) / 2 + 10
-          }
-          remove.add(a.id === nb.id ? b.id : a.id)
+        if (!this.overlaps(smals[i].bbox, smals[j].bbox)) continue
+        const a = smals[i], b = smals[j]
+        const keeper = a.area >= b.area ? a : b
+        const eaten = keeper === a ? b : a
+        this.absorb(keeper, eaten)
+        if (a.area + b.area >= this.smalMergeBgArea) {
+          keeper.type = 'bg'
+          keeper.confidence = Math.max(keeper.confidence, 30)
         }
+        remove.add(eaten.id)
       }
     }
 
     if (remove.size > 0) {
       this.blobs = this.blobs.filter(b => !remove.has(b.id))
     }
+  }
+
+  private isMovingConsistently(b: DriftBlob): boolean {
+    if (b.positionHistory.length < 4) return false
+    const h = b.positionHistory
+    const v: { dx: number; dy: number }[] = []
+    for (let i = h.length - 3; i < h.length; i++) {
+      const dx = h[i].cx - h[i - 1].cx
+      const dy = h[i].cy - h[i - 1].cy
+      if (dx * dx + dy * dy < 1) return false
+      v.push({ dx, dy })
+    }
+    for (let i = 1; i < v.length; i++) {
+      const dot = v[i].dx * v[i - 1].dx + v[i].dy * v[i - 1].dy
+      const m1 = Math.sqrt(v[i - 1].dx ** 2 + v[i - 1].dy ** 2)
+      const m2 = Math.sqrt(v[i].dx ** 2 + v[i].dy ** 2)
+      if (dot / (m1 * m2) < 0.3) return false
+    }
+    return true
   }
 
   private typeTransitions() {
@@ -363,7 +274,7 @@ export class DriftTracker implements DetectionStrategy {
         b.residualHistory.push(residual > this.residualThreshold ? 1 : 0)
         if (b.residualHistory.length > 5) b.residualHistory.shift()
         const recentHigh = b.residualHistory.reduce((s, v) => s + v, 0)
-        if (recentHigh >= this.promoteBgToTarget) {
+        if (recentHigh >= this.promoteBgToTarget && b.area >= this.minPromoteArea && this.isMovingConsistently(b)) {
           b.type = 'target'
           b.confidence = Math.max(b.confidence, 70)
         }
@@ -371,8 +282,8 @@ export class DriftTracker implements DetectionStrategy {
 
       if (b.type === 'target' && b.confidence <= this.demoteTargetThreshold) {
         b.type = 'bg'
-        b.highResidualCount = 0
-        this.releaseDisplayId(b.id)
+        b.residualHistory = []
+        if (b.displayId !== null) this.releaseDisplayId(b.displayId)
       }
     }
 
@@ -401,63 +312,11 @@ export class DriftTracker implements DetectionStrategy {
     })
 
     const smals = this.blobs.filter(b => b.type === 'smal')
-    if (smals.length > this.maxNoiseObjects) {
+    if (smals.length > this.maxSmal) {
       smals.sort((a, b) => b.confidence - a.confidence)
-      const keep = new Set(smals.slice(0, this.maxNoiseObjects).map(s => s.id))
+      const keep = new Set(smals.slice(0, this.maxSmal).map(s => s.id))
       this.blobs = this.blobs.filter(b => b.type !== 'smal' || keep.has(b.id))
     }
-  }
-
-  private findSnapshotMatch(
-    cx: number, cy: number,
-    snap: Uint8Array, snapW: number, snapH: number,
-    radius: number
-  ): { cx: number; cy: number; area: number; w: number; h: number; bbox: [number, number, number, number] } | null {
-    const x0 = Math.max(0, Math.round(cx - radius))
-    const y0 = Math.max(0, Math.round(cy - radius))
-    const x1 = Math.min(this.imgW, Math.round(cx + radius))
-    const y1 = Math.min(this.imgH, Math.round(cy + radius))
-
-    let bestCx = cx, bestCy = cy, bestScore = -Infinity
-
-    for (let y = y0; y < y1; y++) {
-      for (let x = x0; x < x1; x++) {
-        if (this.gray[y * this.imgW + x] <= this.threshold) continue
-        const sad = this.patchSadAt(snap, snapW, snapH, x, y)
-        const dist = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2)
-        const score = sad - dist * this.distanceWeight
-        if (score > bestScore) {
-          bestScore = score
-          bestCx = x
-          bestCy = y
-        }
-      }
-    }
-
-    const maxSad = snapW * snapH * 80
-    const patchSad = this.patchSadAt(snap, snapW, snapH, bestCx, bestCy)
-    if (patchSad > maxSad) return null
-
-    return this.findCentroidNear(bestCx, bestCy, Math.max(snapW, snapH))
-  }
-
-  private patchSadAt(ref: Uint8Array, refW: number, refH: number, cx: number, cy: number): number {
-    let sad = 0
-    const hw = Math.floor(refW / 2)
-    const hh = Math.floor(refH / 2)
-    for (let dy = -hh; dy < refH - hh; dy++) {
-      for (let dx = -hw; dx < refW - hw; dx++) {
-        const ri = (dy + hh) * refW + (dx + hw)
-        const px = Math.round(cx + dx)
-        const py = Math.round(cy + dy)
-        if (px < 0 || px >= this.imgW || py < 0 || py >= this.imgH) {
-          sad += ref[ri]
-          continue
-        }
-        sad += Math.abs(ref[ri] - this.gray[py * this.imgW + px])
-      }
-    }
-    return sad
   }
 
   private updateSnapshot(b: DriftBlob) {
@@ -480,17 +339,19 @@ export class DriftTracker implements DetectionStrategy {
     b.snapshotH = sh
   }
 
-  private findCentroidNear(cx: number, cy: number, radius: number): { cx: number; cy: number; area: number; w: number; h: number; bbox: [number, number, number, number] } | null {
+  private findCentroidNear(
+    cx: number, cy: number, radius: number, _exclude?: Set<number>
+  ): { cx: number; cy: number; area: number; w: number; h: number; bbox: [number, number, number, number]; tag: number } | null {
     const x0 = Math.max(0, Math.round(cx - radius))
     const y0 = Math.max(0, Math.round(cy - radius))
     const x1 = Math.min(this.imgW, Math.round(cx + radius))
     const y1 = Math.min(this.imgH, Math.round(cy + radius))
     let sumX = 0, sumY = 0, count = 0
     let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0
-    const blobThr = this.threshold * 1.2
+    const tag = y0 * this.imgW + x0
     for (let y = y0; y < y1; y++) {
       for (let x = x0; x < x1; x++) {
-        if (this.gray[y * this.imgW + x] > blobThr) {
+        if (this.gray[y * this.imgW + x] > this.threshold) {
           sumX += x; sumY += y; count++
           if (x < minX) minX = x; if (y < minY) minY = y
           if (x > maxX) maxX = x; if (y > maxY) maxY = y
@@ -502,6 +363,7 @@ export class DriftTracker implements DetectionStrategy {
       cx: Math.round(sumX / count), cy: Math.round(sumY / count), area: count,
       w: maxX - minX + 1, h: maxY - minY + 1,
       bbox: [Math.max(0, minX - 1), Math.max(0, minY - 1), Math.min(this.imgW, maxX + 2), Math.min(this.imgH, maxY + 2)],
+      tag,
     }
   }
 
@@ -527,25 +389,20 @@ export class DriftTracker implements DetectionStrategy {
     return a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]
   }
 
-  private mergeInto(a: DriftBlob, b: DriftBlob): DriftBlob {
-    const keeper = a.area >= b.area ? a : b
-    const absorbed = keeper === a ? b : a
-    keeper.area += absorbed.area
-    keeper.bbox = unionBbox(keeper.bbox, absorbed.bbox)
-    keeper.w = keeper.bbox[2] - keeper.bbox[0]
-    keeper.h = keeper.bbox[3] - keeper.bbox[1]
-    keeper.cx = Math.round((keeper.cx * keeper.framesSeen + absorbed.cx * absorbed.framesSeen) / (keeper.framesSeen + absorbed.framesSeen))
-    keeper.cy = Math.round((keeper.cy * keeper.framesSeen + absorbed.cy * absorbed.framesSeen) / (keeper.framesSeen + absorbed.framesSeen))
-    keeper.vx = (keeper.vx + absorbed.vx) / 2
-    keeper.vy = (keeper.vy + absorbed.vy) / 2
-    keeper.framesSeen += absorbed.framesSeen
-    if (absorbed.displayId !== null && keeper.displayId === null) {
-      keeper.displayId = absorbed.displayId
-    } else if (absorbed.displayId !== null) {
-      this.releaseDisplayId(absorbed.displayId)
+  private absorb(into: DriftBlob, from: DriftBlob) {
+    into.cx = Math.round((into.cx * into.area + from.cx * from.area) / (into.area + from.area))
+    into.cy = Math.round((into.cy * into.area + from.cy * from.area) / (into.area + from.area))
+    into.area += from.area
+    into.bbox = unionBbox(into.bbox, from.bbox)
+    into.w = into.bbox[2] - into.bbox[0]
+    into.h = into.bbox[3] - into.bbox[1]
+    into.vx = (into.vx + from.vx) / 2
+    into.vy = (into.vy + from.vy) / 2
+    if (from.displayId !== null) {
+      if (into.displayId === null) into.displayId = from.displayId
+      else this.releaseDisplayId(from.displayId)
     }
-    this.updateSnapshot(keeper)
-    return keeper
+    this.updateSnapshot(into)
   }
 
   private initialScan() {
@@ -599,8 +456,8 @@ export class DriftTracker implements DetectionStrategy {
       framesSeen: b.framesSeen,
       missMs: b.missMs,
       residualSpeed: Math.sqrt((b.vx - this.bgVx) ** 2 + (b.vy - this.bgVy) ** 2),
-      lowResidualFrames: b.type === 'bg' ? b.framesSeen : 0,
-      highResidualFrames: b.highResidualCount,
+      lowResidualFrames: 0,
+      highResidualFrames: b.residualHistory.reduce((s, v) => s + v, 0),
       highJerkFrames: 0,
       avgArea: b.area,
       refSliceH: null,
@@ -632,8 +489,8 @@ export class DriftTracker implements DetectionStrategy {
     for (const b of this.blobs) {
       const tag = b.type === 'target' ? `TGT#${b.displayId}` : b.type === 'bg' ? 'BG' : 'S'
       const res = Math.sqrt((b.vx - this.bgVx) ** 2 + (b.vy - this.bgVy) ** 2)
-      const rhist = b.residualHistory.reduce((s, v) => s + v, 0)
-      console.log(`  ${tag} id=${b.id} conf=${b.confidence.toFixed(0)} (${b.cx.toFixed(0)},${b.cy.toFixed(0)}) v=(${b.vx.toFixed(0)},${b.vy.toFixed(0)}) res=${res.toFixed(0)} rh=${rhist}/${b.residualHistory.length} a=${b.area} s=${b.framesSeen} m=${b.missMs.toFixed(0)}ms`)
+      const rh = b.residualHistory.reduce((s, v) => s + v, 0)
+      console.log(`  ${tag} id=${b.id} conf=${b.confidence.toFixed(0)} (${b.cx.toFixed(0)},${b.cy.toFixed(0)}) v=(${b.vx.toFixed(0)},${b.vy.toFixed(0)}) res=${res.toFixed(0)} rh=${rh}/${b.residualHistory.length} a=${b.area} s=${b.framesSeen} m=${b.missMs.toFixed(0)}ms`)
     }
   }
 }
