@@ -2,6 +2,7 @@ import { useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useDroneStore } from '../store/droneStore'
+import { useGameStore } from '../store/gameStore'
 
 interface Props {
   targetRef: React.RefObject<THREE.Group>
@@ -13,7 +14,7 @@ export default function TargetCam({ targetRef, renderTarget }: Props) {
   const { scene } = useThree()
 
   useFrame(({ gl }) => {
-    if (!ref.current || !targetRef.current) return
+    if (!ref.current || !targetRef.current || useGameStore.getState().phase !== 'playing') return
 
     const targetWorldPos = new THREE.Vector3()
     targetRef.current.getWorldPosition(targetWorldPos)

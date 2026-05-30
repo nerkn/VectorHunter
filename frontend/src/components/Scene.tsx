@@ -34,7 +34,7 @@ export default function Scene({ onFrames, paused }: { onFrames: (frames: Record<
   const gamePhase = useGameStore(s => s.phase)
 
   useEffect(() => {
-    if (gamePhase === 'playing') {
+    if (gamePhase === 'playing' && !initialized.current) {
       const configs = useGameStore.getState().targets
       if (configs.length === 0) return
       useTargetStore.getState().initFromConfig(configs)
@@ -70,30 +70,29 @@ export default function Scene({ onFrames, paused }: { onFrames: (frames: Record<
       <ambientLight intensity={0.4} />
       <directionalLight position={[50, 100, 50]} intensity={1.2} castShadow />
       <hemisphereLight args={['#87CEEB', '#3d4f2f', 0.3]} />
-      <fog attach="fog" args={['#c9dfe8', 80, 350]} />
+      <fog attach="fog" args={['#c9dfe8', 80, 350]} /> 
+        <Terrain />
+        <DroneModel />
+        <FollowCamera />
 
-      <Terrain />
-      <DroneModel />
-      <FollowCamera />
+        <OnboardCamera offset={[-0.25, -0.05, -0.6]} renderTarget={leftRT} />
+        <OnboardCamera offset={[0.25, -0.05, -0.6]} renderTarget={rightRT} />
 
-      <OnboardCamera offset={[-0.25, -0.05, -0.6]} renderTarget={leftRT} />
-      <OnboardCamera offset={[0.25, -0.05, -0.6]} renderTarget={rightRT} />
-
-      {targets.filter(t => t.active).map((t, i) => {
-        const config = gameTargets.find(g => g.id === t.id)
-        return (
-          <TargetDrone
-            key={t.id}
-            id={t.id}
-            behavior={t.behavior}
-            color={t.color}
-            startPosition={[40 - i * 30, 20 + i * 5, i * 20]}
-            speed={config?.speed ?? 40}
-            ref={i === 0 ? alphaRef : undefined}
-          />
-        )
-      })}
-      <TargetCam targetRef={alphaRef as React.RefObject<THREE.Group>} renderTarget={targetRT} />
-    </>
+        {targets.filter(t => t.active).map((t, i) => {
+          const config = gameTargets.find(g => g.id === t.id)
+          return (
+            <TargetDrone
+              key={t.id}
+              id={t.id}
+              behavior={t.behavior}
+              color={t.color}
+              startPosition={[40 - i * 30, 20 + i * 5, i * 20]}
+              speed={config?.speed ?? 40}
+              ref={i === 0 ? alphaRef : undefined}
+            />
+          )
+        })}
+        <TargetCam targetRef={alphaRef as React.RefObject<THREE.Group>} renderTarget={targetRT} />
+      </>   
   )
 }

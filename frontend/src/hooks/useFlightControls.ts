@@ -77,7 +77,10 @@ export function useFlightControls() {
           startRecording({ minArea, maxArea, threshold, detectionFps })
         } else {
           const rec = stopRecording()
-          if (rec) useDetectionStore.getState().setPlayback(rec)
+          if (rec) {
+            useDetectionStore.getState().setPlayback(rec)
+            useGameStore.getState().setPhase('paused')
+          }
         }
       }
       if (e.code === 'KeyT') {

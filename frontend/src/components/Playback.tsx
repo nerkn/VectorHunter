@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Recording } from '../utils/recorder'
+import { GroundTruth } from './playback/types'
 
 const HEX = '0123456789ABCDEF'
 
@@ -96,15 +97,6 @@ function saveAllFrames(rec: Recording, groundTruth?: GroundTruth) {
   saveFolder = ''
 }
 
-interface Props {
-  recording: Recording
-  onClose: () => void
-}
-
-interface GroundTruth {
-  frames: { frame: number; targets: { cx: number; cy: number }[] }[]
-}
-
 async function loadSession(session: string): Promise<{ rec: Recording; gt: GroundTruth } | null> {
   try {
     const listRes = await fetch(`/save-gray/list?session=${encodeURIComponent(session)}`)
@@ -143,83 +135,204 @@ async function loadSession(session: string): Promise<{ rec: Recording; gt: Groun
   }
 }
 
+function drawFrame(
+  canvas: HTMLCanvasElement,
+  thumbEl: HTMLDivElement,
+  listEl: HTMLDivElement,
+  counterEl: HTMLSpanElement,
+  idx: number,
+  rec: Recording,
+  gt: GroundTruth,
+) {
+  const frame = rec.frames[idx]
+  if (!frame) return
+
+  const w = frame.xorImage.width
+  const h = frame.xorImage.height
+  if (canvas.width !== w) canvas.width = w
+  if (canvas.height !== h) canvas.height = h
+
+  counterEl.textContent = `${idx + 1} / ${rec.frames.length}`
+
+  const ctx = canvas.getContext('2d')!
+  ctx.putImageData(frame.xorImage, 0, 0)
+
+  for (const t of frame.tracked) {
+    const isTarget = t.displayId !== null
+    ctx.strokeStyle = isTarget ? '#ffff00' : '#ffffff44'
+    ctx.strokeRect(t.bbox[0], t.bbox[1], t.bbox[2] - t.bbox[0], t.bbox[3] - t.bbox[1])
+    if (isTarget) {
+      ctx.fillStyle = '#ffff00'
+      ctx.font = '12px monospace'
+      ctx.fillText(`T${t.displayId}`, t.cx + 4, t.cy - 4)
+      const dt = 0.15
+      ctx.beginPath()
+      ctx.moveTo(t.cx, t.cy)
+      ctx.lineTo(t.cx + t.vx * dt, t.cy + t.vy * dt)
+      ctx.strokeStyle = '#ffff0088'
+      ctx.stroke()
+    } else {
+      ctx.fillStyle = '#ffffff44'
+      ctx.beginPath()
+      ctx.arc(t.cx, t.cy, 2, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+
+  const gtFrame = gt.frames.find(f => f.frame === idx)
+  if (gtFrame) {
+    for (const t of gtFrame.targets) {
+      ctx.strokeStyle = '#ff00ff'
+      ctx.lineWidth = 2
+      ctx.strokeRect(t.cx - 6, t.cy - 6, 12, 12)
+      ctx.beginPath()
+      ctx.moveTo(t.cx - 8, t.cy)
+      ctx.lineTo(t.cx + 8, t.cy)
+      ctx.moveTo(t.cx, t.cy - 8)
+      ctx.lineTo(t.cx, t.cy + 8)
+      ctx.strokeStyle = '#ff00ff88'
+      ctx.lineWidth = 1
+      ctx.stroke()
+    }
+    ctx.lineWidth = 1
+  }
+
+  const scrollTop = thumbEl.scrollTop
+  thumbEl.innerHTML = ''
+  const targets = frame.tracked.filter((t: any) => t.displayId !== null && t.refBlock && t.refBlockW > 0)
+  const mag = 5
+  for (const t of targets) {
+    const sw = t.refBlockW
+    const sh = t.refBlockH
+    const [bx, by, bx2, by2] = t.bbox
+    const fw = bx2 - bx
+    const fh = by2 - by
+
+    const wrapper = document.createElement('div')
+    wrapper.style.cssText = 'border:1px solid #0f04'
+
+    const label = document.createElement('div')
+    label.style.cssText = 'font-size:10px;color:#0f0;padding:2px 4px'
+    label.textContent = `T${t.displayId} snap=${sw}x${sh} area=${fw}x${fh}`
+    wrapper.appendChild(label)
+
+    const canvases = document.createElement('div')
+    canvases.style.cssText = 'display:flex;flex-direction:column;gap:2px'
+
+    const refBlock = t.refBlock
+    if (sw > 0 && sh > 0 && refBlock && refBlock.length >= sw * sh) {
+      const c = document.createElement('canvas')
+      c.width = sw; c.height = sh
+      c.style.cssText = `width:${sw * mag}px;height:${sh * mag}px;image-rendering:pixelated;border:1px solid #0f0`
+      const id = new ImageData(sw, sh)
+      for (let i = 0; i < sw * sh; i++) {
+        const d = i << 2
+        id.data[d] = id.data[d + 1] = id.data[d + 2] = refBlock[i]
+        id.data[d + 3] = 255
+      }
+      c.getContext('2d')!.putImageData(id, 0, 0)
+      canvases.appendChild(c)
+    }
+
+    const cx = Math.max(0, bx), cy = Math.max(0, by)
+    const cx2 = Math.min(frame.xorImage.width, bx2), cy2 = Math.min(frame.xorImage.height, by2)
+    const cfw = cx2 - cx, cfh = cy2 - cy
+    if (cfw > 0 && cfh > 0) {
+      const c = document.createElement('canvas')
+      c.width = cfw; c.height = cfh
+      c.style.cssText = `width:${fw * mag}px;height:${fh * mag}px;image-rendering:pixelated;border:1px solid #ff0`
+      const id = new ImageData(cfw, cfh)
+      for (let y = 0; y < cfh; y++) {
+        for (let x = 0; x < cfw; x++) {
+          const si = ((cy + y) * frame.xorImage.width + (cx + x)) << 2
+          const di = (y * cfw + x) << 2
+          id.data[di] = id.data[di + 1] = id.data[di + 2] = frame.xorImage.data[si]
+          id.data[di + 3] = 255
+        }
+      }
+      c.getContext('2d')!.putImageData(id, 0, 0)
+      canvases.appendChild(c)
+    }
+
+    wrapper.appendChild(canvases)
+    thumbEl.appendChild(wrapper)
+  }
+  thumbEl.scrollTop = scrollTop
+
+  listEl.innerHTML = ''
+  for (const t of frame.tracked) {
+    const div = document.createElement('div')
+    div.style.color = t.displayId !== null ? '#ff0' : '#fff4'
+    const label = t.displayId !== null ? `T${t.displayId}` : `#${t.internalId}`
+    div.textContent = `${label} pos=${Math.round(t.cx)}x${Math.round(t.cy)} vel=${Math.round(t.vx)}x${Math.round(t.vy)} area=${t.area} r:${Math.round(t.residualSpeed)} jerk=${t.highJerkFrames} seen=${t.framesSeen} miss=${t.missMs.toFixed(0)}ms`
+    listEl.appendChild(div)
+  }
+  if (gtFrame) {
+    const div = document.createElement('div')
+    div.style.color = '#f0f'
+    div.textContent = 'GT: ' + gtFrame.targets.map((t: any) => `(${t.cx},${t.cy})`).join(' ')
+    listEl.appendChild(div)
+  }
+}
+
+interface Props {
+  recording: Recording
+  onClose: () => void
+}
+
 export default function Playback({ recording, onClose }: Props) {
-  const [frameIdx, setFrameIdx] = useState(0)
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
-  const [hoverCoord, setHoverCoord] = useState<string>('')
-  const [copiedFlash, setCopiedFlash] = useState(false)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const thumbRef = useRef<HTMLDivElement>(null)
+  const listRef = useRef<HTMLDivElement>(null)
+  const counterRef = useRef<HTMLSpanElement>(null)
+  const hoverRef = useRef<HTMLSpanElement>(null)
+
+  const frameIdxRef = useRef(0)
+  const activeRecRef = useRef<Recording>(recording)
+  const gtRef = useRef<GroundTruth>({ frames: [] })
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  const [loadedRec, setLoadedRec] = useState<Recording | null>(null)
   const [sessions, setSessions] = useState<string[]>([])
   const [selectedSession, setSelectedSession] = useState('')
-  const [loadedRec, setLoadedRec] = useState<Recording | null>(null)
   const [annotateMode, setAnnotateMode] = useState(false)
   const [groundTruth, setGroundTruth] = useState<GroundTruth>({ frames: [] })
-  const total = recording.frames.length
-  const frame = recording.frames[frameIdx]
-  const activeRec = loadedRec || recording
-  const activeTotal = activeRec.frames.length
-  const activeFrame = activeRec.frames[frameIdx]
+
+  activeRecRef.current = loadedRec || recording
+  gtRef.current = groundTruth
+
+  const gotoFrameRef = useRef<(idx: number) => void>(() => {})
+  gotoFrameRef.current = (idx: number) => {
+    const rec = activeRecRef.current
+    if (idx < 0 || idx >= rec.frames.length) return
+    frameIdxRef.current = idx
+    const canvas = canvasRef.current
+    const thumb = thumbRef.current
+    const list = listRef.current
+    const counter = counterRef.current
+    if (!canvas || !thumb || !list || !counter) return
+    drawFrame(canvas, thumb, list, counter, idx, rec, gtRef.current)
+  }
+
+  useEffect(() => {
+    frameIdxRef.current = 0
+    gotoFrameRef.current(0)
+  }, [loadedRec, recording])
+
+  useEffect(() => {
+    gotoFrameRef.current(frameIdxRef.current)
+  }, [groundTruth])
 
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowLeft') setFrameIdx(i => Math.max(0, i - 1))
-      if (e.key === 'ArrowRight') setFrameIdx(i => Math.min(total - 1, i + 1))
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'ArrowLeft') { gotoFrameRef.current(frameIdxRef.current - 1); e.preventDefault(); e.stopPropagation(); return }
+      if (e.key === 'ArrowRight') { gotoFrameRef.current(frameIdxRef.current + 1); e.preventDefault(); e.stopPropagation(); return }
+      if (e.key === 'Escape') { onCloseRef.current(); e.preventDefault(); e.stopPropagation(); return }
     }
-    window.addEventListener('keydown', handleKey)
-    return () => window.removeEventListener('keydown', handleKey)
-  }, [total, onClose])
-
-  useEffect(() => {
-    if (!canvasRef.current || !activeFrame) return
-    const ctx = canvasRef.current.getContext('2d')
-    if (!ctx) return
-    ctx.putImageData(activeFrame.xorImage, 0, 0)
-
-    for (const t of activeFrame.tracked) {
-      const isTarget = t.displayId !== null
-      const color = isTarget ? '#ffff00' : '#ffffff44'
-      ctx.strokeStyle = color
-      ctx.strokeRect(t.bbox[0], t.bbox[1], t.bbox[2] - t.bbox[0], t.bbox[3] - t.bbox[1])
-
-      if (isTarget) {
-        ctx.fillStyle = '#ffff00'
-        ctx.font = '12px monospace'
-        ctx.fillText(`T${t.displayId}`, t.cx + 4, t.cy - 4)
-
-        const dt = 0.15
-        const px = t.cx + t.vx * dt
-        const py = t.cy + t.vy * dt
-        ctx.beginPath()
-        ctx.moveTo(t.cx, t.cy)
-        ctx.lineTo(px, py)
-        ctx.strokeStyle = '#ffff0088'
-        ctx.stroke()
-      } else {
-        ctx.fillStyle = '#ffffff44'
-        ctx.beginPath()
-        ctx.arc(t.cx, t.cy, 2, 0, Math.PI * 2)
-        ctx.fill()
-      }
-    }
-
-    const gtFrame = groundTruth.frames.find(f => f.frame === frameIdx)
-    if (gtFrame) {
-      for (const t of gtFrame.targets) {
-        ctx.strokeStyle = '#ff00ff'
-        ctx.lineWidth = 2
-        ctx.strokeRect(t.cx - 6, t.cy - 6, 12, 12)
-        ctx.beginPath()
-        ctx.moveTo(t.cx - 8, t.cy)
-        ctx.lineTo(t.cx + 8, t.cy)
-        ctx.moveTo(t.cx, t.cy - 8)
-        ctx.lineTo(t.cx, t.cy + 8)
-        ctx.strokeStyle = '#ff00ff88'
-        ctx.lineWidth = 1
-        ctx.stroke()
-      }
-      ctx.lineWidth = 1
-    }
-  }, [activeFrame, frameIdx, groundTruth])
+    window.addEventListener('keydown', handleKey, true)
+    return () => window.removeEventListener('keydown', handleKey, true)
+  }, [])
 
   useEffect(() => {
     fetch('/save-gray/sessions').then(r => r.json()).then(setSessions).catch(() => {})
@@ -237,45 +350,52 @@ export default function Playback({ recording, onClose }: Props) {
         PARAMS: min={recording.params.minArea} max={recording.params.maxArea} thr={recording.params.threshold} fps={recording.params.detectionFps}
       </div>
 
+      <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
       <canvas
         ref={canvasRef}
-        width={activeFrame?.xorImage.width ?? 640}
-        height={activeFrame?.xorImage.height ?? 480}
-        style={{ border: copiedFlash ? '2px solid #ff0' : '1px solid #0f04', imageRendering: 'pixelated', cursor: annotateMode ? 'crosshair' : 'default' }}
+        width={640} height={480}
+        style={{ border: '1px solid #0f04', imageRendering: 'pixelated', cursor: annotateMode ? 'crosshair' : 'default' }}
         onMouseMove={e => {
           const r = e.currentTarget.getBoundingClientRect()
-          const sx = (e.currentTarget.width) / r.width
-          const sy = (e.currentTarget.height) / r.height
+          const sx = e.currentTarget.width / r.width
+          const sy = e.currentTarget.height / r.height
           const px = Math.floor((e.clientX - r.left) * sx)
           const py = Math.floor((e.clientY - r.top) * sy)
-          if (activeFrame) {
-            const i = (py * activeFrame.xorImage.width + px) * 4
-            const v = activeFrame.xorImage.data[i]
-            setHoverCoord(`${px}x${py} v=${v}`)
+          const frame = activeRecRef.current.frames[frameIdxRef.current]
+          if (frame && hoverRef.current) {
+            const i = (py * frame.xorImage.width + px) * 4
+            const v = frame.xorImage.data[i]
+            hoverRef.current.textContent = `${px}x${py} v=${v}`
+            hoverRef.current.style.color = '#0ff'
           }
         }}
-        onMouseLeave={() => setHoverCoord('')}
+        onMouseLeave={() => {
+          if (hoverRef.current) {
+            hoverRef.current.textContent = 'hover for coords'
+            hoverRef.current.style.color = '#0f04'
+          }
+        }}
         onClick={e => {
           const r = e.currentTarget.getBoundingClientRect()
-          const sx = (e.currentTarget.width) / r.width
-          const sy = (e.currentTarget.height) / r.height
+          const sx = e.currentTarget.width / r.width
+          const sy = e.currentTarget.height / r.height
           const px = Math.floor((e.clientX - r.left) * sx)
           const py = Math.floor((e.clientY - r.top) * sy)
           if (annotateMode) {
             setGroundTruth(prev => {
               const frames = [...prev.frames]
-              const existing = frames.find(f => f.frame === frameIdx)
+              const existing = frames.find(f => f.frame === frameIdxRef.current)
               if (existing) {
                 existing.targets.push({ cx: px, cy: py })
               } else {
-                frames.push({ frame: frameIdx, targets: [{ cx: px, cy: py }] })
+                frames.push({ frame: frameIdxRef.current, targets: [{ cx: px, cy: py }] })
               }
               return { frames }
             })
           } else {
             navigator.clipboard.writeText(`${px},${py}`)
-            setCopiedFlash(true)
-            setTimeout(() => setCopiedFlash(false), 200)
+            const c = canvasRef.current
+            if (c) { c.style.border = '2px solid #ff0'; setTimeout(() => { c.style.border = '1px solid #0f04' }, 200) }
           }
         }}
         onContextMenu={e => {
@@ -283,7 +403,7 @@ export default function Playback({ recording, onClose }: Props) {
           if (!annotateMode) return
           setGroundTruth(prev => {
             const frames = prev.frames.map(f => {
-              if (f.frame !== frameIdx) return f
+              if (f.frame !== frameIdxRef.current) return f
               return { ...f, targets: f.targets.slice(0, -1) }
             }).filter(f => f.targets.length > 0)
             return { frames }
@@ -291,14 +411,17 @@ export default function Playback({ recording, onClose }: Props) {
         }}
       />
 
+      <div ref={thumbRef} style={{ display: 'flex', flexDirection: 'column', gap: 8, overflowY: 'auto', maxHeight: '70vh' }} />
+      </div>
+
       <div style={{ marginTop: 8, display: 'flex', gap: 12, alignItems: 'center' }}>
-        <button onClick={() => setFrameIdx(Math.max(0, frameIdx - 1))} style={btnStyle}>◀</button>
-        <span style={{ fontSize: 12 }}>{frameIdx + 1} / {activeTotal}</span>
-        <button onClick={() => setFrameIdx(Math.min(activeTotal - 1, frameIdx + 1))} style={btnStyle}>▶</button>
+        <button onClick={() => gotoFrameRef.current(frameIdxRef.current - 1)} style={btnStyle}>◀</button>
+        <span ref={counterRef} style={{ fontSize: 12 }}>1 / 1</span>
+        <button onClick={() => gotoFrameRef.current(frameIdxRef.current + 1)} style={btnStyle}>▶</button>
         <span style={{ fontSize: 10, color: '#0f08', marginLeft: 20 }}>← → arrow keys</span>
-        <span style={{ fontSize: 12, color: hoverCoord ? '#0ff' : '#0f04', marginLeft: 20, minWidth: 120 }}>{hoverCoord || 'hover for coords'}</span>
+        <span ref={hoverRef} style={{ fontSize: 12, color: '#0f04', marginLeft: 20, minWidth: 120 }}>hover for coords</span>
         <button onClick={() => { const f = saveFolder || newSaveFolder(); saveRecordingJson(recording, f, groundTruth) }} style={{ ...btnStyle, marginLeft: 20 }}>SAVE JSON</button>
-        <button onClick={() => { const f = saveFolder || newSaveFolder(); saveGrayFrame(recording, frameIdx, f) }} style={{ ...btnStyle, marginLeft: 8 }}>SAVE IMAGE</button>
+        <button onClick={() => { const f = saveFolder || newSaveFolder(); saveGrayFrame(recording, frameIdxRef.current, f) }} style={{ ...btnStyle, marginLeft: 8 }}>SAVE IMAGE</button>
         <button onClick={() => saveAllFrames(recording, groundTruth)} style={{ ...btnStyle, marginLeft: 8 }}>SAVE ALL</button>
         <button onClick={async () => {
           const r = await fetch('/save-gray/sessions')
@@ -313,11 +436,11 @@ export default function Playback({ recording, onClose }: Props) {
         {selectedSession && (
           <button onClick={async () => {
             const result = await loadSession(selectedSession)
-            if (result) { setLoadedRec(result.rec); setGroundTruth(result.gt); setFrameIdx(0) }
+            if (result) { setLoadedRec(result.rec); setGroundTruth(result.gt) }
           }} style={{ ...btnStyle, marginLeft: 4 }}>GO</button>
         )}
         {loadedRec && (
-          <button onClick={() => { setLoadedRec(null); setFrameIdx(0) }} style={{ ...btnStyle, marginLeft: 4, color: '#f80' }}>CLEAR</button>
+          <button onClick={() => { setLoadedRec(null); setGroundTruth({ frames: [] }) }} style={{ ...btnStyle, marginLeft: 4, color: '#f80' }}>CLEAR</button>
         )}
         <button
           onClick={() => setAnnotateMode(!annotateMode)}
@@ -328,21 +451,7 @@ export default function Playback({ recording, onClose }: Props) {
         )}
       </div>
 
-      <div style={{ marginTop: 8, fontSize: 10, color: '#0f08', maxHeight: 200, overflowY: 'auto', width: 640 }}>
-        {activeFrame && activeFrame.tracked.map(t => (
-          <div key={t.internalId} style={{ color: t.displayId !== null ? '#ff0' : '#fff4' }}>
-            {t.displayId !== null ? `T${t.displayId}` : `#${t.internalId}`}
-            {' '} pos={Math.round(t.cx)}x{Math.round(t.cy)} vel={Math.round(t.vx)}x{Math.round(t.vy)} area={t.area} r:{Math.round(t.residualSpeed)} jerk={t.highJerkFrames}
-            seen={t.framesSeen} 
-            miss={t.missMs.toFixed(0)}ms
-          </div>
-        ))}
-        {groundTruth.frames.find(f => f.frame === frameIdx) && (
-          <div style={{ color: '#f0f' }}>
-            GT: {groundTruth.frames.find(f => f.frame === frameIdx)!.targets.map(t => `(${t.cx},${t.cy})`).join(' ')}
-          </div>
-        )}
-      </div>
+      <div ref={listRef} style={{ marginTop: 8, fontSize: 10, color: '#0f08', maxHeight: 200, overflowY: 'auto', width: 640 }} />
     </div>
   )
 }

@@ -71,7 +71,10 @@ export default function App() {
         PAUSE
       </button>
       <PauseOverlay />
-      {playback && <Playback recording={playback} onClose={() => useDetectionStore.getState().setPlayback(null)} />}
+      {playback && <Playback recording={playback} onClose={() => {
+        useDetectionStore.getState().setPlayback(null)
+        if (useGameStore.getState().phase === 'paused') useGameStore.getState().resume()
+      }} />}
       <div style={{
         position: 'absolute', bottom: 20, left: '50%', transform: 'translateX(-50%)',
         color: '#ffffff44', fontFamily: 'monospace', fontSize: 11, textAlign: 'center',

@@ -2,6 +2,7 @@ import { useRef } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import * as THREE from 'three'
 import { useDroneStore } from '../store/droneStore'
+import { useGameStore } from '../store/gameStore'
 
 interface Props {
   offset: [number, number, number]
@@ -13,7 +14,7 @@ export default function OnboardCamera({ offset, renderTarget }: Props) {
   const { scene } = useThree()
 
   useFrame(({ gl }) => {
-    if (!ref.current) return
+    if (!ref.current || useGameStore.getState().phase !== 'playing') return
     const { position, yaw } = useDroneStore.getState()
     const worldPos = new THREE.Vector3(...offset)
     worldPos.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw)

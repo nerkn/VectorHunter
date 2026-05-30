@@ -213,6 +213,21 @@ export class DriftTracker implements DetectionStrategy {
     const remove = new Set<number>()
     const bgs = this.blobs.filter(b => b.type === 'bg' && !remove.has(b.id))
     const smals = this.blobs.filter(b => b.type === 'smal' && !remove.has(b.id))
+    const targets = this.blobs.filter(b => b.type === 'target')
+
+    for (const bg of bgs) {
+      for (const t of targets) {
+        const dist = Math.sqrt((bg.cx - t.cx) ** 2 + (bg.cy - t.cy) ** 2)
+        if (dist < 15) {
+          const dvx = Math.abs(bg.vx - t.vx)
+          const dvy = Math.abs(bg.vy - t.vy)
+          if (dvx < 20 && dvy < 20) {
+            remove.add(bg.id)
+            break
+          }
+        }
+      }
+    }
 
     for (const bg of bgs) {
       for (let i = smals.length - 1; i >= 0; i--) {
