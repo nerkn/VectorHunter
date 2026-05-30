@@ -332,7 +332,8 @@ export default function Playback({ recording, onClose }: Props) {
         {activeFrame && activeFrame.tracked.map(t => (
           <div key={t.internalId} style={{ color: t.displayId !== null ? '#ff0' : '#fff4' }}>
             {t.displayId !== null ? `T${t.displayId}` : `#${t.internalId}`}
-            {' '} pos={Math.round(t.cx)}x{Math.round(t.cy)} vel={Math.round(t.vx)}x{Math.round(t.vy)} area={t.area} r:{Math.round(t.residualSpeed)} hj:{t.highJerkFrames}
+            {' '} pos={Math.round(t.cx)}x{Math.round(t.cy)} vel={Math.round(t.vx)}x{Math.round(t.vy)} area={t.area} r:{Math.round(t.residualSpeed)} jerk={t.highJerkFrames}
+            seen={t.framesSeen} 
             miss={t.missMs.toFixed(0)}ms
           </div>
         ))}

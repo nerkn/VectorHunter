@@ -151,17 +151,24 @@ export class DriftTracker implements DetectionStrategy {
         const centroid = this.findCentroidNear(predCx, predCy, radius, used)
         if (centroid) {
           used.add(centroid.tag)
-          const rawVx = (centroid.cx - b.cx) / this.dt
-          const rawVy = (centroid.cy - b.cy) / this.dt
+          let cx = centroid.cx, cy = centroid.cy, area = centroid.area, w = centroid.w, h = centroid.h, bbox = centroid.bbox
+          if (b.area > 0 && centroid.area > b.area * 2 && b.snapshotW > 0) {
+            const refined = this.findCentroidInSnapshot(centroid.cx, centroid.cy, b.snapshotW, b.snapshotH)
+            if (refined) {
+              cx = refined.cx; cy = refined.cy; area = refined.area; w = refined.w; h = refined.h; bbox = refined.bbox
+            }
+          }
+          const rawVx = (cx - b.cx) / this.dt
+          const rawVy = (cy - b.cy) / this.dt
           const smooth = type === 'target' ? 0.5 : 0.7
           b.vx = b.vx * smooth + rawVx * (1 - smooth)
           b.vy = b.vy * smooth + rawVy * (1 - smooth)
-          b.cx = centroid.cx
-          b.cy = centroid.cy
-          b.area = centroid.area
-          b.w = centroid.w
-          b.h = centroid.h
-          b.bbox = centroid.bbox
+          b.cx = cx
+          b.cy = cy
+          b.area = area
+          b.w = w
+          b.h = h
+          b.bbox = bbox
           b.missMs = 0
           b.framesSeen++
           b.lastSeen = performance.now()
@@ -339,6 +346,34 @@ export class DriftTracker implements DetectionStrategy {
     b.snapshotH = sh
   }
 
+  private findCentroidInSnapshot(
+    cx: number, cy: number, snapW: number, snapH: number
+  ): { cx: number; cy: number; area: number; w: number; h: number; bbox: [number, number, number, number] } | null {
+    const hw = Math.floor(snapW / 2)
+    const hh = Math.floor(snapH / 2)
+    const x0 = Math.max(0, Math.round(cx - hw))
+    const y0 = Math.max(0, Math.round(cy - hh))
+    const x1 = Math.min(this.imgW, Math.round(cx + hw))
+    const y1 = Math.min(this.imgH, Math.round(cy + hh))
+    let sumX = 0, sumY = 0, count = 0
+    let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0
+    for (let y = y0; y < y1; y++) {
+      for (let x = x0; x < x1; x++) {
+        if (this.gray[y * this.imgW + x] > this.threshold) {
+          sumX += x; sumY += y; count++
+          if (x < minX) minX = x; if (y < minY) minY = y
+          if (x > maxX) maxX = x; if (y > maxY) maxY = y
+        }
+      }
+    }
+    if (count < this.minArea) return null
+    return {
+      cx: Math.round(sumX / count), cy: Math.round(sumY / count), area: count,
+      w: maxX - minX + 1, h: maxY - minY + 1,
+      bbox: [Math.max(0, minX - 1), Math.max(0, minY - 1), Math.min(this.imgW, maxX + 2), Math.min(this.imgH, maxY + 2)],
+    }
+  }
+
   private findCentroidNear(
     cx: number, cy: number, radius: number, _exclude?: Set<number>
   ): { cx: number; cy: number; area: number; w: number; h: number; bbox: [number, number, number, number]; tag: number } | null {
@@ -373,7 +408,11 @@ export class DriftTracker implements DetectionStrategy {
   }
 
   private markGrid(b: DriftBlob) {
-    const [l, t, r, bb] = b.bbox
+    this.markGridBbox(b.bbox)
+  }
+
+  private markGridBbox(bbox: [number, number, number, number]) {
+    const [l, t, r, bb] = bbox
     const c0 = Math.max(0, Math.floor(l / this.gridCellW))
     const r0 = Math.max(0, Math.floor(t / this.gridCellH))
     const c1 = Math.min(this.gridCols - 1, Math.floor(r / this.gridCellW))
