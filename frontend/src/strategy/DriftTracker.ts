@@ -61,6 +61,9 @@ export class DriftTracker implements DetectionStrategy {
   private historyLen = 10
   private maxSmal = 20
 
+  private visitedMap: Uint32Array = new Uint32Array(0)
+  private visitStamp = 0
+  private ffStack: number[] = []
   private debug = false
   private frameIdx = 0
 
@@ -74,6 +77,7 @@ export class DriftTracker implements DetectionStrategy {
     this.blobFinder.setGray(gray, w, h)
     this.gridCellW = Math.ceil(w / this.gridCols)
     this.gridCellH = Math.ceil(h / this.gridRows)
+    if (this.visitedMap.length !== w * h) this.visitedMap = new Uint32Array(w * h)
   }
 
   setAreaRange(min: number, max: number) {
@@ -138,7 +142,6 @@ export class DriftTracker implements DetectionStrategy {
   }
 
   private matchAll() {
-    const used = new Set<number>()
     const order: BlobType[] = ['target', 'bg', 'smal']
 
     for (const type of order) {
@@ -148,34 +151,32 @@ export class DriftTracker implements DetectionStrategy {
         const predCy = b.cy + b.vy * this.dt
         const radius = type === 'target' ? 20 : type === 'bg' ? 15 : 10
 
-        const centroid = this.findCentroidNear(predCx, predCy, radius, used)
-        if (centroid) {
-          used.add(centroid.tag)
-          let cx = centroid.cx, cy = centroid.cy, area = centroid.area, w = centroid.w, h = centroid.h, bbox = centroid.bbox
-          if (b.area > 0 && centroid.area > b.area * 2 && b.snapshotW > 0) {
-            const refined = this.findCentroidInSnapshot(centroid.cx, centroid.cy, b.snapshotW, b.snapshotH)
-            if (refined) {
-              cx = refined.cx; cy = refined.cy; area = refined.area; w = refined.w; h = refined.h; bbox = refined.bbox
-            }
+        let matched = false
+        if (b.snapshot && b.snapshotW > 0 && b.snapshotH > 0) {
+          const pos = this.findInNextFrame(b.snapshot, b.snapshotW, b.snapshotH, predCx, predCy, radius)
+          const blob = this.floodFillBBox(pos.cx, pos.cy)
+          if (blob && blob.area >= this.minArea) {
+            const rawVx = (blob.cx - b.cx) / this.dt
+            const rawVy = (blob.cy - b.cy) / this.dt
+            const smooth = type === 'target' ? 0.5 : 0.7
+            b.vx = b.vx * smooth + rawVx * (1 - smooth)
+            b.vy = b.vy * smooth + rawVy * (1 - smooth)
+            b.cx = blob.cx
+            b.cy = blob.cy
+            b.area = blob.area
+            b.w = blob.w
+            b.h = blob.h
+            b.bbox = blob.bbox
+            b.missMs = 0
+            b.framesSeen++
+            b.lastSeen = performance.now()
+            this.updateSnapshot(b)
+            this.pushHistory(b)
+            if (type === 'target') b.confidence = Math.min(100, b.confidence + 5)
+            matched = true
           }
-          const rawVx = (cx - b.cx) / this.dt
-          const rawVy = (cy - b.cy) / this.dt
-          const smooth = type === 'target' ? 0.5 : 0.7
-          b.vx = b.vx * smooth + rawVx * (1 - smooth)
-          b.vy = b.vy * smooth + rawVy * (1 - smooth)
-          b.cx = cx
-          b.cy = cy
-          b.area = area
-          b.w = w
-          b.h = h
-          b.bbox = bbox
-          b.missMs = 0
-          b.framesSeen++
-          b.lastSeen = performance.now()
-          this.updateSnapshot(b)
-          this.pushHistory(b)
-          if (type === 'target') b.confidence = Math.min(100, b.confidence + 5)
-        } else {
+        }
+        if (!matched) {
           b.cx += b.vx * this.dt
           b.cy += b.vy * this.dt
           b.missMs += this.dt * 1000
@@ -342,78 +343,121 @@ export class DriftTracker implements DetectionStrategy {
   }
 
   private updateSnapshot(b: DriftBlob) {
-    const sw = b.w + 2
-    const sh = b.h + 2
+    const sw = Math.min(b.w + 2, 50)
+    const sh = Math.min(b.h + 2, 50)
     const hw = Math.floor(sw / 2)
     const hh = Math.floor(sh / 2)
-    const snap = new Uint8Array(sw * sh)
+    if (!b.snapshot || b.snapshot.length < 50 * 50) b.snapshot = new Uint8Array(50 * 50)
+    b.snapshot.fill(0, 0, sw * sh)
     for (let dy = 0; dy < sh; dy++) {
       for (let dx = 0; dx < sw; dx++) {
         const px = Math.round(b.cx) - hw + dx
         const py = Math.round(b.cy) - hh + dy
         if (px >= 0 && px < this.imgW && py >= 0 && py < this.imgH) {
-          snap[dy * sw + dx] = this.gray[py * this.imgW + px]
+          b.snapshot[dy * sw + dx] = this.gray[py * this.imgW + px]
         }
       }
     }
-    b.snapshot = snap
     b.snapshotW = sw
     b.snapshotH = sh
   }
 
-  private findCentroidInSnapshot(
-    cx: number, cy: number, snapW: number, snapH: number
-  ): { cx: number; cy: number; area: number; w: number; h: number; bbox: [number, number, number, number] } | null {
+  private computeSAD(snap: Uint8Array, snapW: number, snapH: number, cx: number, cy: number): number {
     const hw = Math.floor(snapW / 2)
     const hh = Math.floor(snapH / 2)
-    const x0 = Math.max(0, Math.round(cx - hw))
-    const y0 = Math.max(0, Math.round(cy - hh))
-    const x1 = Math.min(this.imgW, Math.round(cx + hw))
-    const y1 = Math.min(this.imgH, Math.round(cy + hh))
-    let sumX = 0, sumY = 0, count = 0
-    let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0
-    for (let y = y0; y < y1; y++) {
-      for (let x = x0; x < x1; x++) {
-        if (this.gray[y * this.imgW + x] > this.threshold) {
-          sumX += x; sumY += y; count++
-          if (x < minX) minX = x; if (y < minY) minY = y
-          if (x > maxX) maxX = x; if (y > maxY) maxY = y
-        }
+    let sad = 0
+    let count = 0
+    for (let dy = 0; dy < snapH; dy++) {
+      for (let dx = 0; dx < snapW; dx++) {
+        const fx = Math.round(cx) - hw + dx
+        const fy = Math.round(cy) - hh + dy
+        if (fx < 0 || fx >= this.imgW || fy < 0 || fy >= this.imgH) continue
+        sad += Math.abs(this.gray[fy * this.imgW + fx] - snap[dy * snapW + dx])
+        count++
       }
     }
-    if (count < this.minArea) return null
-    return {
-      cx: Math.round(sumX / count), cy: Math.round(sumY / count), area: count,
-      w: maxX - minX + 1, h: maxY - minY + 1,
-      bbox: [Math.max(0, minX - 1), Math.max(0, minY - 1), Math.min(this.imgW, maxX + 2), Math.min(this.imgH, maxY + 2)],
-    }
+    return count > 0 ? sad / count : Infinity
   }
 
-  private findCentroidNear(
-    cx: number, cy: number, radius: number, _exclude?: Set<number>
-  ): { cx: number; cy: number; area: number; w: number; h: number; bbox: [number, number, number, number]; tag: number } | null {
-    const x0 = Math.max(0, Math.round(cx - radius))
-    const y0 = Math.max(0, Math.round(cy - radius))
-    const x1 = Math.min(this.imgW, Math.round(cx + radius))
-    const y1 = Math.min(this.imgH, Math.round(cy + radius))
-    let sumX = 0, sumY = 0, count = 0
-    let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0
-    const tag = y0 * this.imgW + x0
-    for (let y = y0; y < y1; y++) {
-      for (let x = x0; x < x1; x++) {
-        if (this.gray[y * this.imgW + x] > this.threshold) {
-          sumX += x; sumY += y; count++
-          if (x < minX) minX = x; if (y < minY) minY = y
-          if (x > maxX) maxX = x; if (y > maxY) maxY = y
+  private findInNextFrame(
+    snap: Uint8Array, snapW: number, snapH: number, px: number, py: number, searchRadius: number
+  ): { cx: number; cy: number } {
+    let bestOx = 0, bestOy = 0
+    let bestScore = this.computeSAD(snap, snapW, snapH, px, py)
+    let improved = true
+    while (improved) {
+      improved = false
+      let nextOx = bestOx, nextOy = bestOy, nextScore = bestScore
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue
+          const ox = bestOx + dx
+          const oy = bestOy + dy
+          if (Math.abs(ox) > searchRadius || Math.abs(oy) > searchRadius) continue
+          const score = this.computeSAD(snap, snapW, snapH, px + ox, py + oy)
+          if (score < nextScore) {
+            nextScore = score
+            nextOx = ox
+            nextOy = oy
+          }
         }
       }
+      if (nextScore < bestScore) {
+        bestScore = nextScore
+        bestOx = nextOx
+        bestOy = nextOy
+        improved = true
+      }
+    }
+    return { cx: px + bestOx, cy: py + bestOy }
+  }
+
+  private floodFillBBox(startX: number, startY: number): {
+    cx: number; cy: number; area: number; w: number; h: number; bbox: [number, number, number, number]
+  } | null {
+    let sx = Math.max(0, Math.min(this.imgW - 1, Math.round(startX)))
+    let sy = Math.max(0, Math.min(this.imgH - 1, Math.round(startY)))
+    if (this.gray[sy * this.imgW + sx] <= this.threshold) {
+      let found = false
+      for (let r = 1; r <= 3 && !found; r++) {
+        for (let dy = -r; dy <= r && !found; dy++) {
+          for (let dx = -r; dx <= r && !found; dx++) {
+            const nx = sx + dx, ny = sy + dy
+            if (nx >= 0 && nx < this.imgW && ny >= 0 && ny < this.imgH && this.gray[ny * this.imgW + nx] > this.threshold) {
+              sx = nx; sy = ny; found = true
+            }
+          }
+        }
+      }
+      if (!found) return null
+    }
+    this.visitStamp++
+    const stamp = this.visitStamp
+    const stack = this.ffStack
+    stack.length = 0
+    stack.push(sy * this.imgW + sx)
+    let sumX = 0, sumY = 0, count = 0
+    let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0
+    while (stack.length > 0 && count < this.maxArea) {
+      const idx = stack.pop()!
+      if (this.visitedMap[idx] === stamp) continue
+      const x = idx % this.imgW
+      const y = (idx - x) / this.imgW
+      if (this.gray[idx] <= this.threshold) continue
+      this.visitedMap[idx] = stamp
+      sumX += x; sumY += y; count++
+      if (x < minX) minX = x; if (y < minY) minY = y
+      if (x > maxX) maxX = x; if (y > maxY) maxY = y
+      if (x > 0) stack.push(idx - 1)
+      if (x < this.imgW - 1) stack.push(idx + 1)
+      if (y > 0) stack.push(idx - this.imgW)
+      if (y < this.imgH - 1) stack.push(idx + this.imgW)
     }
     if (count < this.minArea) return null
     return {
       cx: Math.round(sumX / count), cy: Math.round(sumY / count), area: count,
       w: maxX - minX + 1, h: maxY - minY + 1,
       bbox: [Math.max(0, minX - 1), Math.max(0, minY - 1), Math.min(this.imgW, maxX + 2), Math.min(this.imgH, maxY + 2)],
-      tag,
     }
   }
 
