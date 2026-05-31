@@ -9,3 +9,4 @@
 - Be aware other files. dependencies, dont assume
 - When user says "propose": evaluate, answer, dont act, dont code!
 - See frontend/docs/tracking-system.md for tracker pipeline documentation
+- See frontend/scripts/tests.md for test & visualization scripts (test.ts, visualize_sad.ts)

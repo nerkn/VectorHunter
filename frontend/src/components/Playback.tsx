@@ -234,23 +234,28 @@ function drawFrame(
       canvases.appendChild(c)
     }
 
-    const cx = Math.max(0, bx), cy = Math.max(0, by)
-    const cx2 = Math.min(frame.xorImage.width, bx2), cy2 = Math.min(frame.xorImage.height, by2)
-    const cfw = cx2 - cx, cfh = cy2 - cy
-    if (cfw > 0 && cfh > 0) {
+    const pad = 20
+    const fx0 = Math.max(0, bx - pad), fy0 = Math.max(0, by - pad)
+    const fx1 = Math.min(frame.xorImage.width, bx2 + pad), fy1 = Math.min(frame.xorImage.height, by2 + pad)
+    const ffw = fx1 - fx0, ffh = fy1 - fy0
+    if (ffw > 0 && ffh > 0) {
       const c = document.createElement('canvas')
-      c.width = cfw; c.height = cfh
-      c.style.cssText = `width:${fw * mag}px;height:${fh * mag}px;image-rendering:pixelated;border:1px solid #ff0`
-      const id = new ImageData(cfw, cfh)
-      for (let y = 0; y < cfh; y++) {
-        for (let x = 0; x < cfw; x++) {
-          const si = ((cy + y) * frame.xorImage.width + (cx + x)) << 2
-          const di = (y * cfw + x) << 2
+      c.width = ffw; c.height = ffh
+      c.style.cssText = `width:${(fw + pad * 2) * mag}px;height:${(fh + pad * 2) * mag}px;image-rendering:pixelated;border:1px solid #ff0`
+      const id = new ImageData(ffw, ffh)
+      for (let y = 0; y < ffh; y++) {
+        for (let x = 0; x < ffw; x++) {
+          const si = ((fy0 + y) * frame.xorImage.width + (fx0 + x)) << 2
+          const di = (y * ffw + x) << 2
           id.data[di] = id.data[di + 1] = id.data[di + 2] = frame.xorImage.data[si]
           id.data[di + 3] = 255
         }
       }
-      c.getContext('2d')!.putImageData(id, 0, 0)
+      const ctx = c.getContext('2d')!
+      ctx.putImageData(id, 0, 0)
+      ctx.strokeStyle = '#ff0'
+      ctx.lineWidth = 1
+      ctx.strokeRect(bx - fx0, by - fy0, bx2 - bx, by2 - by)
       canvases.appendChild(c)
     }
 
@@ -451,7 +456,7 @@ export default function Playback({ recording, onClose }: Props) {
         )}
       </div>
 
-      <div ref={listRef} style={{ marginTop: 8, fontSize: 10, color: '#0f08', maxHeight: 200, overflowY: 'auto', width: 640 }} />
+      <div ref={listRef} style={{ marginTop: 8, fontSize: 10, color: '#0f08', height: 200, overflowY: 'auto', width: 640 }} />
     </div>
   )
 }

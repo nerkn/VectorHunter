@@ -149,31 +149,33 @@ export class DriftTracker implements DetectionStrategy {
         if (b.type !== type) continue
         const predCx = b.cx + b.vx * this.dt
         const predCy = b.cy + b.vy * this.dt
-        const radius = type === 'target' ? 20 : type === 'bg' ? 15 : 10
+        const radius = type === 'target' ? 40 : type === 'bg' ? 15 : 10
 
         let matched = false
         if (b.snapshot && b.snapshotW > 0 && b.snapshotH > 0) {
           const pos = this.findInNextFrame(b.snapshot, b.snapshotW, b.snapshotH, predCx, predCy, radius)
-          const blob = this.floodFillBBox(pos.cx, pos.cy)
-          if (blob && blob.area >= this.minArea) {
-            const rawVx = (blob.cx - b.cx) / this.dt
-            const rawVy = (blob.cy - b.cy) / this.dt
-            const smooth = type === 'target' ? 0.5 : 0.7
-            b.vx = b.vx * smooth + rawVx * (1 - smooth)
-            b.vy = b.vy * smooth + rawVy * (1 - smooth)
-            b.cx = blob.cx
-            b.cy = blob.cy
-            b.area = blob.area
-            b.w = blob.w
-            b.h = blob.h
-            b.bbox = blob.bbox
-            b.missMs = 0
-            b.framesSeen++
-            b.lastSeen = performance.now()
-            this.updateSnapshot(b)
-            this.pushHistory(b)
-            if (type === 'target') b.confidence = Math.min(100, b.confidence + 5)
-            matched = true
+          if (pos) {
+            const blob = this.floodFillBBox(pos.cx, pos.cy)
+            if (blob && blob.area >= this.minArea) {
+              const rawVx = (blob.cx - b.cx) / this.dt
+              const rawVy = (blob.cy - b.cy) / this.dt
+              const smooth = type === 'target' ? 0.3 : 0.3
+              b.vx = b.vx * smooth + rawVx * (1 - smooth)
+              b.vy = b.vy * smooth + rawVy * (1 - smooth)
+              b.cx = blob.cx
+              b.cy = blob.cy
+              b.area = b.area > 0 ? Math.max(b.area * 0.7, Math.min(b.area * 1.3, blob.area)) : blob.area
+              b.w = blob.w
+              b.h = blob.h
+              b.bbox = blob.bbox
+              b.missMs = 0
+              b.framesSeen++
+              b.lastSeen = performance.now()
+              this.updateSnapshot(b)
+              this.pushHistory(b)
+              if (type === 'target') b.confidence = Math.min(100, b.confidence + 5)
+              matched = true
+            }
           }
         }
         if (!matched) {
@@ -362,28 +364,39 @@ export class DriftTracker implements DetectionStrategy {
     b.snapshotH = sh
   }
 
-  private computeSAD(snap: Uint8Array, snapW: number, snapH: number, cx: number, cy: number): number {
+  private computeShiftAdd(snap: Uint8Array, snapW: number, snapH: number, cx: number, cy: number): number {
     const hw = Math.floor(snapW / 2)
     const hh = Math.floor(snapH / 2)
-    let sad = 0
+    let total = 0
     let count = 0
     for (let dy = 0; dy < snapH; dy++) {
       for (let dx = 0; dx < snapW; dx++) {
         const fx = Math.round(cx) - hw + dx
         const fy = Math.round(cy) - hh + dy
         if (fx < 0 || fx >= this.imgW || fy < 0 || fy >= this.imgH) continue
-        sad += Math.abs(this.gray[fy * this.imgW + fx] - snap[dy * snapW + dx])
+        total += (this.gray[fy * this.imgW + fx] + snap[dy * snapW + dx]) >> 1
         count++
       }
     }
-    return count > 0 ? sad / count : Infinity
+    return count > 0 ? total / count : 0
   }
 
   private findInNextFrame(
     snap: Uint8Array, snapW: number, snapH: number, px: number, py: number, searchRadius: number
-  ): { cx: number; cy: number } {
-    let bestOx = 0, bestOy = 0
-    let bestScore = this.computeSAD(snap, snapW, snapH, px, py)
+  ): { cx: number; cy: number; score: number } | null {
+    let bestOx = 0, bestOy = 0, bestScore = -Infinity
+    const coarse = Math.max(3, Math.floor(searchRadius / 5))
+    for (let oy = -searchRadius; oy <= searchRadius; oy += coarse) {
+      for (let ox = -searchRadius; ox <= searchRadius; ox += coarse) {
+        const score = this.computeShiftAdd(snap, snapW, snapH, px + ox, py + oy)
+        if (score > bestScore) {
+          bestScore = score
+          bestOx = ox
+          bestOy = oy
+        }
+      }
+    }
+    const refineRadius = coarse
     let improved = true
     while (improved) {
       improved = false
@@ -394,52 +407,59 @@ export class DriftTracker implements DetectionStrategy {
           const ox = bestOx + dx
           const oy = bestOy + dy
           if (Math.abs(ox) > searchRadius || Math.abs(oy) > searchRadius) continue
-          const score = this.computeSAD(snap, snapW, snapH, px + ox, py + oy)
-          if (score < nextScore) {
+          if (Math.abs(ox - bestOx) > refineRadius || Math.abs(oy - bestOy) > refineRadius) continue
+          const score = this.computeShiftAdd(snap, snapW, snapH, px + ox, py + oy)
+          if (score > nextScore) {
             nextScore = score
             nextOx = ox
             nextOy = oy
           }
         }
       }
-      if (nextScore < bestScore) {
+      if (nextScore > bestScore) {
         bestScore = nextScore
         bestOx = nextOx
         bestOy = nextOy
         improved = true
       }
     }
-    return { cx: px + bestOx, cy: py + bestOy }
+    // if (bestScore < 30) return null
+    return { cx: px + bestOx + snapW / 2, cy: py + bestOy + snapH / 2, score: bestScore }
   }
 
   private floodFillBBox(startX: number, startY: number): {
     cx: number; cy: number; area: number; w: number; h: number; bbox: [number, number, number, number]
   } | null {
-    let sx = Math.max(0, Math.min(this.imgW - 1, Math.round(startX)))
-    let sy = Math.max(0, Math.min(this.imgH - 1, Math.round(startY)))
-    if (this.gray[sy * this.imgW + sx] <= this.threshold) {
-      let found = false
-      for (let r = 1; r <= 3 && !found; r++) {
-        for (let dy = -r; dy <= r && !found; dy++) {
-          for (let dx = -r; dx <= r && !found; dx++) {
-            const nx = sx + dx, ny = sy + dy
-            if (nx >= 0 && nx < this.imgW && ny >= 0 && ny < this.imgH && this.gray[ny * this.imgW + nx] > this.threshold) {
-              sx = nx; sy = ny; found = true
-            }
-          }
-        }
-      }
-      if (!found) return null
-    }
+    const cx = Math.max(2, Math.min(this.imgW - 3, Math.round(startX)))
+    const cy = Math.max(2, Math.min(this.imgH - 3, Math.round(startY)))
+
     this.visitStamp++
     const stamp = this.visitStamp
     const stack = this.ffStack
     stack.length = 0
-    stack.push(sy * this.imgW + sx)
     let sumX = 0, sumY = 0, count = 0
     let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0
+
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dx = -1; dx <= 1; dx++) {
+        const x = cx + dx, y = cy + dy
+        const idx = y * this.imgW + x
+        this.visitedMap[idx] = stamp
+        sumX += x; sumY += y; count++
+        if (x < minX) minX = x; if (y < minY) minY = y
+        if (x > maxX) maxX = x; if (y > maxY) maxY = y
+      }
+
+    for (let d = -2; d <= 2; d++) {
+      stack.push((cy - 2) * this.imgW + (cx + d))
+      stack.push((cy + 2) * this.imgW + (cx + d))
+      stack.push((cy + d) * this.imgW + (cx - 2))
+      stack.push((cy + d) * this.imgW + (cx + 2))
+    }
+
     while (stack.length > 0 && count < this.maxArea) {
       const idx = stack.pop()!
+      if (idx < 0 || idx >= this.imgW * this.imgH) continue
       if (this.visitedMap[idx] === stamp) continue
       const x = idx % this.imgW
       const y = (idx - x) / this.imgW
@@ -457,7 +477,7 @@ export class DriftTracker implements DetectionStrategy {
     return {
       cx: Math.round(sumX / count), cy: Math.round(sumY / count), area: count,
       w: maxX - minX + 1, h: maxY - minY + 1,
-      bbox: [Math.max(0, minX - 1), Math.max(0, minY - 1), Math.min(this.imgW, maxX + 2), Math.min(this.imgH, maxY + 2)],
+      bbox: [Math.max(0, minX - 1), Math.max(0, minY - 1), Math.min(this.imgW, maxX + 2), Math.min(this.imgH, maxY + 2)] as [number, number, number, number],
     }
   }
 

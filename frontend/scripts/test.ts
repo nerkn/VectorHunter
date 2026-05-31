@@ -161,7 +161,7 @@ function cmdDetail() {
 
   console.log(`=== ${entry.label} detail ===\n`)
   for (const { frame, result, ms } of results) {
-    const withId = result.result.tracked.filter(t => t.displayId !== null)
+    const withId = result.tracked.filter(t => t.displayId !== null)
     const parts = withId.map(t => `d${t.displayId}(#${t.internalId} ${t.cx.toFixed(0)},${t.cy.toFixed(0)} a=${t.area.toFixed(0)})`)
     const bg = `bg=(${result.bgVx.toFixed(0)},${result.bgVy.toFixed(0)})`
     console.log(`f${String(frame).padStart(2)} ${ms.toFixed(1)}ms | ${parts.join(' ') || 'no target'} | ${bg} | noise=${result.tracked.filter(t => t.displayId === null).length}`)
