@@ -47,11 +47,11 @@ export function useFlightControls() {
       const lockMatch = e.code.match(/^(?:Digit|Numpad)([1-9])$/)
       if (lockMatch) {
         const displayId = Number(lockMatch[1])
-        const { lockedTarget, lockTarget, tracker } = useDetectionStore.getState()
+        const { lockedTarget, lockTarget, strategyImpl } = useDetectionStore.getState()
         if (lockedTarget === displayId) {
           lockTarget(null)
           useFlightDirector.getState().setCommand('idle', null)
-        } else if (tracker && tracker.getByDisplayId(displayId)) {
+        } else if (strategyImpl && strategyImpl.getByDisplayId(displayId)) {
           lockTarget(displayId)
           useFlightDirector.getState().setCommand('lock', displayId)
         }

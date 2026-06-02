@@ -40,8 +40,9 @@ export class ShapeTracker implements DetectionStrategy {
   private bgVy = 0
 
   private targetMinArea = 20
-  private targetMinAspect = 1.5
   private matchRadius = 50
+  private matchRadiusGrowRate = 0.2
+  private matchRadiusMax = 150
   private maxMissingMs = 500
   private historyLen = 10
   private smooth = 0.3
@@ -70,6 +71,7 @@ export class ShapeTracker implements DetectionStrategy {
 
   setAreaRange(min: number, max: number) {
     this.minArea = min
+    if (max < 500) max = 500
     this.maxArea = max
   }
 
@@ -77,7 +79,7 @@ export class ShapeTracker implements DetectionStrategy {
     this.frameIdx++
     const blobs = this.blobFinder.nearbyBlobMerge({
       threshold: this.threshold,
-      mergeDistance: 2,
+      mergeDistance: 4,
       nmsDistance: 15,
       minArea: this.minArea,
       maxArea: this.maxArea,
@@ -106,6 +108,7 @@ export class ShapeTracker implements DetectionStrategy {
     this.bgVy = 0
     this.frameIdx = 0
     this.prevNoiseBlobs = []
+    this.consecutiveMisses = 0
   }
 
   private classifyByShape(blobs: BlobCandidate[]): { targets: BlobCandidate[]; noise: BlobCandidate[] } {
@@ -113,8 +116,7 @@ export class ShapeTracker implements DetectionStrategy {
     const noise: BlobCandidate[] = []
     for (const b of blobs) {
       const area = b.w * b.h
-      const aspect = b.w / b.h
-      if (area >= this.targetMinArea && aspect >= this.targetMinAspect) {
+      if (area >= this.targetMinArea) {
         targets.push(b)
       } else {
         noise.push(b)
@@ -197,15 +199,21 @@ export class ShapeTracker implements DetectionStrategy {
     }
   }
 
+  private consecutiveMisses = 0
+
   private matchTargets(candidates: BlobCandidate[]) {
     const used = new Set<number>()
+    const effectiveRadius = Math.min(
+      this.matchRadiusMax,
+      this.matchRadius * (1 + this.consecutiveMisses * this.matchRadiusGrowRate)
+    )
 
     for (const t of this.targets) {
       const predCx = t.cx + t.vx * this.dt
       const predCy = t.cy + t.vy * this.dt
 
       let bestIdx = -1
-      let bestDist = this.matchRadius
+      let bestDist = effectiveRadius
       for (let i = 0; i < candidates.length; i++) {
         if (used.has(i)) continue
         const c = candidates[i]
@@ -232,6 +240,7 @@ export class ShapeTracker implements DetectionStrategy {
         t.missMs = 0
         t.framesSeen++
         t.confidence = Math.min(100, t.confidence + 10)
+        this.consecutiveMisses = 0
         t.lastSeen = performance.now()
         const pad = 1
         t.bbox = [
@@ -246,9 +255,13 @@ export class ShapeTracker implements DetectionStrategy {
         t.cx += t.vx * this.dt
         t.cy += t.vy * this.dt
         t.missMs += this.dt * 1000
-        t.vx *= 0.7
-        t.vy *= 0.7
-        t.confidence = Math.max(0, t.confidence - 15)
+        const decayRate = t.framesSeen < 3 ? 0.9 : 0.7
+        t.vx *= decayRate
+        t.vy *= decayRate
+        if (t.framesSeen >= 3) {
+          t.confidence = Math.max(0, t.confidence - 15)
+        }
+        this.consecutiveMisses++
       }
     }
   }
@@ -281,7 +294,7 @@ export class ShapeTracker implements DetectionStrategy {
         snapshotW: 0, snapshotH: 0,
         bbox,
         framesSeen: 1, missMs: 0,
-        confidence: 50,
+        confidence: 45,
         lastSeen: performance.now(),
         positionHistory: [{ cx: c.cx, cy: c.cy }],
       }
@@ -306,7 +319,7 @@ export class ShapeTracker implements DetectionStrategy {
 
   private assignDisplayIds() {
     for (const t of this.targets) {
-      if (t.displayId === null && t.confidence >= 60 && this.activeDisplayIds.size < this.displayPool.length) {
+      if (t.displayId === null && t.confidence >= 50 && this.activeDisplayIds.size < this.displayPool.length) {
         const nearAssigned = this.targets.some(o =>
           o !== t && o.displayId !== null &&
           Math.sqrt((o.cx - t.cx) ** 2 + (o.cy - t.cy) ** 2) < 30

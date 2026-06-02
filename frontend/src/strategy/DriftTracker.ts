@@ -1,4 +1,4 @@
-import { BlobFinder } from '../utils/blobFinder'
+import { BlobFinder, BlobCandidate } from '../utils/blobFinder'
 import { TrackedBlob } from '../utils/blobTracker'
 import { DetectionStrategy, StrategyResult } from './types'
 
@@ -52,7 +52,7 @@ export class DriftTracker implements DetectionStrategy {
 
   private maxMissingMs = 500
   private confidenceStart = 20
-  private promoteSmalToBg = 5
+  private promoteSmalArea = 40
   private minPromoteArea = 50
   private promoteBgToTarget = 3
   private demoteTargetThreshold = 60
@@ -82,6 +82,7 @@ export class DriftTracker implements DetectionStrategy {
 
   setAreaRange(min: number, max: number) {
     this.minArea = min
+    if (max < 500) max = 500
     this.maxArea = max
   }
 
@@ -143,23 +144,67 @@ export class DriftTracker implements DetectionStrategy {
 
   private matchAll() {
     const order: BlobType[] = ['target', 'bg', 'smal']
+    const currentBlobs = this.blobFinder.nearbyBlobMerge({
+      threshold: this.threshold, mergeDistance: 2, nmsDistance: 15,
+      minArea: this.minArea, maxArea: this.maxArea,
+    })
 
     for (const type of order) {
       for (const b of this.blobs) {
         if (b.type !== type) continue
         const predCx = b.cx + b.vx * this.dt
         const predCy = b.cy + b.vy * this.dt
-        const radius = type === 'target' ? 40 : type === 'bg' ? 15 : 10
+        let baseR: number, growR: number, capR: number
+        if (type === 'target') { baseR = 40; growR = 0.25; capR = 3.5 }
+        else if (type === 'bg') { baseR = 15; growR = 0.2; capR = 2.5 }
+        else { baseR = 10; growR = 0.15; capR = 1.5 }
+        const radius = baseR * Math.min(capR, 1 + (b.missMs / (this.dt * 1000)) * growR)
 
         let matched = false
-        if (b.snapshot && b.snapshotW > 0 && b.snapshotH > 0) {
+        if (type === 'target') {
+          const bigRadius = Math.min(200, radius * 3)
+          let bestBlob: BlobCandidate | null = null
+          let bestBlobScore = -Infinity
+          for (const fb of currentBlobs) {
+            const d = Math.sqrt((predCx - fb.cx) ** 2 + (predCy - fb.cy) ** 2)
+            if (d < bigRadius) {
+              const area = fb.w * fb.h
+              const score = area / (1 + d * 0.1)
+              if (score > bestBlobScore) {
+                bestBlobScore = score
+                bestBlob = fb
+              }
+            }
+          }
+          if (bestBlob) {
+            const rawVx = (bestBlob.cx - b.cx) / this.dt
+            const rawVy = (bestBlob.cy - b.cy) / this.dt
+            const sm = 0.3
+            b.vx = b.vx * sm + rawVx * (1 - sm)
+            b.vy = b.vy * sm + rawVy * (1 - sm)
+            b.cx = bestBlob.cx
+            b.cy = bestBlob.cy
+            b.area = b.area > 0 ? Math.max(b.area * 0.5, Math.min(b.area * 2, bestBlob.w * bestBlob.h)) : bestBlob.w * bestBlob.h
+            b.w = bestBlob.w
+            b.h = bestBlob.h
+            const pad = 1
+            b.bbox = [Math.max(0, Math.round(bestBlob.cx - bestBlob.w / 2) - pad), Math.max(0, Math.round(bestBlob.cy - bestBlob.h / 2) - pad), Math.min(this.imgW, Math.round(bestBlob.cx + bestBlob.w / 2) + pad), Math.min(this.imgH, Math.round(bestBlob.cy + bestBlob.h / 2) + pad)]
+            b.missMs = 0
+            b.framesSeen++
+            b.lastSeen = performance.now()
+            this.updateSnapshot(b)
+            this.pushHistory(b)
+            b.confidence = Math.min(100, b.confidence + 5)
+            matched = true
+          }
+        } else if (b.snapshot && b.snapshotW > 0 && b.snapshotH > 0) {
           const pos = this.findInNextFrame(b.snapshot, b.snapshotW, b.snapshotH, predCx, predCy, radius)
           if (pos) {
             const blob = this.floodFillBBox(pos.cx, pos.cy)
             if (blob && blob.area >= this.minArea) {
               const rawVx = (blob.cx - b.cx) / this.dt
               const rawVy = (blob.cy - b.cy) / this.dt
-              const smooth = type === 'target' ? 0.3 : 0.3
+              const smooth = 0.3
               b.vx = b.vx * smooth + rawVx * (1 - smooth)
               b.vy = b.vy * smooth + rawVy * (1 - smooth)
               b.cx = blob.cx
@@ -173,7 +218,6 @@ export class DriftTracker implements DetectionStrategy {
               b.lastSeen = performance.now()
               this.updateSnapshot(b)
               this.pushHistory(b)
-              if (type === 'target') b.confidence = Math.min(100, b.confidence + 5)
               matched = true
             }
           }
@@ -182,14 +226,18 @@ export class DriftTracker implements DetectionStrategy {
           b.cx += b.vx * this.dt
           b.cy += b.vy * this.dt
           b.missMs += this.dt * 1000
-          b.vx *= 0.7
-          b.vy *= 0.7
+          const missFr = b.missMs / (this.dt * 1000)
+          const decay = missFr < 3 ? 0.9 : 0.7
+          b.vx *= decay
+          b.vy *= decay
           if (type === 'smal') b.confidence = Math.max(0, b.confidence - 5)
           if (type === 'target') b.confidence = Math.max(0, b.confidence - 10)
         }
       }
     }
   }
+
+  private lastFrameBlobs: BlobCandidate[] = []
 
   private scanGrid() {
     this.grid.fill(false)
@@ -201,6 +249,7 @@ export class DriftTracker implements DetectionStrategy {
       threshold: this.threshold, mergeDistance: 2, nmsDistance: 15,
       minArea: this.minArea, maxArea: this.maxArea,
     })
+    this.lastFrameBlobs = blobs
 
     for (const b of blobs) {
       const col = Math.floor(b.cx / this.gridCellW)
@@ -290,16 +339,21 @@ export class DriftTracker implements DetectionStrategy {
       const rvy = b.vy - this.bgVy
       const residual = Math.sqrt(rvx * rvx + rvy * rvy)
 
-      if (b.type === 'smal' && b.framesSeen >= this.promoteSmalToBg) {
-        b.type = 'bg'
-        b.confidence = (b.confidence + 50) / 2 + 10
+      if (b.type === 'smal' && b.area >= this.promoteSmalArea) {
+        if (b.area >= 100) {
+          b.type = 'target'
+          b.confidence = 70
+        } else {
+          b.type = 'bg'
+          b.confidence = (b.confidence + 50) / 2 + 10
+        }
       }
 
       if (b.type === 'bg') {
         b.residualHistory.push(residual > this.residualThreshold ? 1 : 0)
-        if (b.residualHistory.length > 5) b.residualHistory.shift()
+        if (b.residualHistory.length > 4) b.residualHistory.shift()
         const recentHigh = b.residualHistory.reduce((s, v) => s + v, 0)
-        if (recentHigh >= this.promoteBgToTarget && b.area >= this.minPromoteArea && this.isMovingConsistently(b)) {
+        if (recentHigh >= 2 && b.area >= this.minPromoteArea && (b.area >= 100 || this.isMovingConsistently(b))) {
           b.type = 'target'
           b.confidence = Math.max(b.confidence, 70)
         }
@@ -425,7 +479,7 @@ export class DriftTracker implements DetectionStrategy {
       }
     }
     // if (bestScore < 30) return null
-    return { cx: px + bestOx + snapW / 2, cy: py + bestOy + snapH / 2, score: bestScore }
+    return { cx: px + bestOx, cy: py + bestOy, score: bestScore }
   }
 
   private floodFillBBox(startX: number, startY: number): {

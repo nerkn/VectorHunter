@@ -37,7 +37,7 @@ export class WrappedBlobTracker implements DetectionStrategy {
 
   update(): StrategyResult {
     this.computeBgVelocity()
-    const tracked = this.inner.update()
+    const tracked = this.inner.update(this.bgVx, this.bgVy)
     return { tracked, bgVx: this.bgVx, bgVy: this.bgVy }
   }
 
@@ -138,11 +138,11 @@ export class WrappedBlobTracker implements DetectionStrategy {
     if (wTotal > 0) {
       const dx = wSumX / wTotal
       const dy = wSumY / wTotal
-      const dt = 1 / 16
+      const dt = 1 / 24
       const rawVx = dx / dt
       const rawVy = dy / dt
-      this.bgVx = this.bgVx * (1 - this.smooth) + rawVx * this.smooth
-      this.bgVy = this.bgVy * (1 - this.smooth) + rawVy * this.smooth
+      this.bgVx = this.bgVx * 0.3 + rawVx * 0.7
+      this.bgVy = this.bgVy * 0.3 + rawVy * 0.7
     }
   }
 }

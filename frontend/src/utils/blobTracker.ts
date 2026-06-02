@@ -40,14 +40,14 @@ interface TrackerConfig {
 }
 
 const DEFAULT_CONFIG: TrackerConfig = {
-  searchRadius: 30,
+  searchRadius: 50,
   minArea: 4,
-  maxArea: 256,
-  confirmationFrames: 10,
+  maxArea: 500,
+  confirmationFrames: 3,
   demotionFrames: 10,
   jerkDemotionFrames: 10,
   jerkThreshold: 120,
-  residualThreshold: 25,
+  residualThreshold: 15,
   velocitySmoothing: 0.5,
   maxMissingMs: 300,
   maxNoiseObjects: 15,
@@ -67,6 +67,9 @@ export class BlobTracker {
 
   private blobFinder = new BlobFinder()
 
+  private _bgVx = 0
+  private _bgVy = 0
+  private _verifyBlobs: { cx: number; cy: number; area: number; minX: number; minY: number; maxX: number; maxY: number }[] = []
   private _coveredBuf: Uint8Array = new Uint8Array(0)
 
   constructor(config: Partial<TrackerConfig> = {}) {
@@ -88,11 +91,13 @@ export class BlobTracker {
 
   setAreaRange(min: number, max: number) {
     this.config.minArea = min
-    this.config.maxArea = max
+    this.config.maxArea = Math.max(max, 500)
   }
 
-  update(): TrackedBlob[] {
+  update(bgVx = 0, bgVy = 0): TrackedBlob[] {
     if (!this.gray) return this.table
+    this._bgVx = bgVx
+    this._bgVy = bgVy
     const now = performance.now()
     const dt = this.config.frameDt
 
@@ -337,8 +342,12 @@ export class BlobTracker {
 
   private verify(now: number, dt: number) {
     for (const t of this.table) {
-      const predCx = t.cx + t.vx * dt
-      const predCy = t.cy + t.vy * dt
+      const bgDx = this._bgVx * dt
+      const bgDy = this._bgVy * dt
+      const residualVx = t.vx - this._bgVx
+      const residualVy = t.vy - this._bgVy
+      const predCx = t.cx + bgDx + residualVx * dt
+      const predCy = t.cy + bgDy + residualVy * dt
 
       const [bx0, by0, bx1, by1] = t.bbox
       const halfW = Math.max(8, Math.round((bx1 - bx0) / 2))
@@ -406,7 +415,8 @@ export class BlobTracker {
           t.avgArea = t.avgArea * 0.9 + clampedArea * 0.1
         }
       } else {
-        const fallback = this.findNearestBlob(predCx, predCy, this.config.searchRadius, t.avgArea)
+        const fallbackRadius = t.displayId !== null ? this.config.searchRadius * 4 : this.config.searchRadius
+        const fallback = this.findNearestBlob(predCx, predCy, fallbackRadius, t.avgArea)
         if (fallback) {
           const rawVx = (fallback.cx - t.cx) / dt
           const rawVy = (fallback.cy - t.cy) / dt
@@ -475,10 +485,11 @@ export class BlobTracker {
 
     for (const t of this.table) {
       if (t.missMs > this.config.maxMissingMs) continue
-      const x0 = Math.max(0, Math.round(t.cx - r))
-      const y0 = Math.max(0, Math.round(t.cy - r))
-      const x1 = Math.min(this.imgW, Math.round(t.cx + r))
-      const y1 = Math.min(this.imgH, Math.round(t.cy + r))
+      const cr = t.displayId !== null ? r : 15
+      const x0 = Math.max(0, Math.round(t.cx - cr))
+      const y0 = Math.max(0, Math.round(t.cy - cr))
+      const x1 = Math.min(this.imgW, Math.round(t.cx + cr))
+      const y1 = Math.min(this.imgH, Math.round(t.cy + cr))
       for (let y = y0; y < y1; y++) {
         for (let x = x0; x < x1; x++) {
           covered[y * this.imgW + x] = 1
@@ -568,7 +579,7 @@ export class BlobTracker {
     }
 
     for (const t of this.table) {
-      if (t.displayId !== null && t.area < this.config.minArea) {
+      if (t.displayId !== null && (t.area < this.config.minArea || (t.area < 20 && t.lowResidualFrames >= 3))) {
         this.releaseDisplayId(t.displayId)
         t.displayId = null
       }
@@ -577,17 +588,14 @@ export class BlobTracker {
     const candidates = this.table
       .filter(t => {
         if (t.displayId !== null) return false
-        if (t.highResidualFrames < 5) return false
-        if (t.framesSeen < 3) return false
-        if (t.area < this.config.minArea) return false
-        if (Math.abs(t.vx) + Math.abs(t.vy) < 1) return false
-        const jerkLimit = t.area < this.config.minArea ? this.config.jerkDemotionFrames * 3 : this.config.jerkDemotionFrames
-        if (t.highJerkFrames >= jerkLimit) return false
+        if (t.area < 30) return false
+        if (t.framesSeen < 1) return false
         return true
       })
       .sort((a, b) => {
-        if (Math.abs(a.vx) + Math.abs(a.vy) < 1 && Math.abs(b.vx) + Math.abs(b.vy) >= 1) return 1
-        return b.residualSpeed - a.residualSpeed
+        if (a.area >= 50 && b.area < 50) return -1
+        if (b.area >= 50 && a.area < 50) return 1
+        return b.area - a.area
       })
 
     for (const t of candidates) {

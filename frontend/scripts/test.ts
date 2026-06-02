@@ -44,7 +44,12 @@ function runStrategy(strategy: DetectionStrategy, frames: ReturnType<typeof load
     const t0 = performance.now()
     const result = strategy.update()
     const ms = performance.now() - t0
-    results.push({ frame: i, result, ms })
+    const snapshot: StrategyResult = {
+      tracked: result.tracked.map(t => ({ ...t })),
+      bgVx: result.bgVx,
+      bgVy: result.bgVy,
+    }
+    results.push({ frame: i, result: snapshot, ms })
   }
   return results
 }
