@@ -15,4 +15,4 @@ export interface DetectionStrategy {
   setDebug?(on: boolean): void
 }
 
-export type StrategyName = 'default' | 'flow' | 'hybrid' | 'drift'
+export type StrategyName = 'default' | 'flow' | 'hybrid' | 'drift' | 'shape'

@@ -6,6 +6,7 @@ import { HybridTracker } from '../src/strategy/HybridTracker'
 import { DriftTracker } from '../src/strategy/DriftTracker'
 import { DetectionStrategy, StrategyResult, StrategyName } from '../src/strategy/types'
 import { WrappedBlobTracker } from '../src/strategy/WrappedBlobTracker'
+import { ShapeTracker } from '../src/strategy/ShapeTracker'
 
 const dir = process.argv.find(a => a.startsWith('--dir='))?.slice(6) || 'docs/frames'
 const cmd = process.argv[2] || ''
@@ -53,6 +54,7 @@ const STRATEGIES: { name: StrategyName; label: string; create: () => DetectionSt
   { name: 'flow', label: 'FLOW   ', create: () => new FlowTracker() },
   { name: 'hybrid', label: 'HYBRID ', create: () => new HybridTracker() },
   { name: 'drift', label: 'DRIFT  ', create: () => new DriftTracker() },
+  { name: 'shape', label: 'SHAPE  ', create: () => new ShapeTracker() },
 ]
 
 function cmdBench() {

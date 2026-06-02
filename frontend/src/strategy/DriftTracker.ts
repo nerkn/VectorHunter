@@ -365,6 +365,7 @@ export class DriftTracker implements DetectionStrategy {
   }
 
   private computeShiftAdd(snap: Uint8Array, snapW: number, snapH: number, cx: number, cy: number): number {
+    // brighter=better is correct here: we work on XOR images, not raw grayscale
     const hw = Math.floor(snapW / 2)
     const hh = Math.floor(snapH / 2)
     let total = 0

@@ -61,7 +61,7 @@ export default function HUD() {
         <div style={{ fontWeight: 'bold', marginBottom: 4 }}>DETECTION</div>
         <div>
           STRAT <span style={{ float: 'right' }}>
-            {(['default', 'flow', 'hybrid', 'drift'] as StrategyName[]).map(v => (
+            {(['default', 'flow', 'hybrid', 'drift', 'shape'] as StrategyName[]).map(v => (
               <span
                 key={v}
                 onClick={() => setStrategy(v)}
