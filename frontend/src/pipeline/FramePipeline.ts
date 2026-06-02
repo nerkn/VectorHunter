@@ -82,27 +82,19 @@ export class FramePipeline {
     this.dirty = false
     this.lastRun = now
 
-    if (strategy !== 'default' && strategy !== this.currentStrategyName) {
+    if (strategy !== this.currentStrategyName) {
       this.currentStrategyName = strategy
       this.activeStrategy = createStrategy(strategy)
       useDetectionStore.getState().setStrategyImpl(this.activeStrategy)
     }
 
-    if (this.activeStrategy && strategy !== 'default') {
+    if (this.activeStrategy) {
       this.activeStrategy.setGrayImage(this.grayXor, this.w, this.h, threshold)
       this.activeStrategy.setAreaRange(minArea, maxArea)
       const result = this.activeStrategy.update()
       recordFrame(this.grayXor, this.w, this.h, result.tracked)
       useDetectionStore.getState().setDetectionResult(result.tracked, result.bgVx, result.bgVy)
-      return
     }
-
-    this.tracker.setGrayImage(this.grayXor, this.w, this.h, threshold)
-    this.tracker.setAreaRange(minArea, maxArea)
-    const tracked = this.tracker.update()
-
-    recordFrame(this.grayXor, this.w, this.h, tracked)
-    useDetectionStore.getState().setDetectionResult(tracked)
   }
 
   reset() {

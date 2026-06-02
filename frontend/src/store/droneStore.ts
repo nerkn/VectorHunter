@@ -33,7 +33,7 @@ const MAX_PITCH = Math.PI / 3
 export const useDroneStore = create<DroneState>((set, get) => ({
   position: [0, 20, 0],
   velocity: [0, 0, 0],
-  yaw: 0,
+  yaw: -Math.PI / 2,
   pitch: 0,
   mouseCaptured: false,
   input: {

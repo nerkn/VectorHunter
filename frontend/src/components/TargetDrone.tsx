@@ -31,9 +31,8 @@ interface Props {
   speed: number
 }
 
-const CIRCLE_MAX_HEADING = Math.PI / 3  // 60°. Heading oscillates ±60° for figure8, stays <60° for circle
-const CIRCLE_TURN_RATE = 0.5         // rad/s. At 11 m/s → radius 22m, diameter 44m. At 40 m/s → radius 80m.
-const FIGURE8_HALF_PERIOD = 2.5 // seconds for one lobe (full cycle = 10s)
+const CIRCLE_RADIUS = 25
+const FIGURE8_HALF_PERIOD = 2.5
 const LINE_HALF_LENGTH = 120
 
 const _vel = new THREE.Vector3()
@@ -59,35 +58,54 @@ const TargetDrone = forwardRef<THREE.Group, Props>(({ id, behavior, color, start
     }
 
     time.current += dt
+    const t = time.current
 
-    let turnRate = 0
+    let px: number, py: number, pz: number, hdg: number
+    const wobbleY = Math.sin(t * 1.5) * 1.5
+
     if (behavior === 'circle') {
-      // Constant-turn circle: heading increases at fixed rate.
-      // Speed = 11 m/s, turnRate = 0.5 → radius = 22m, circumference ≈ 138m, one lap ≈ 12.5s
-      turnRate = CIRCLE_TURN_RATE
+      const omega = speedMs / CIRCLE_RADIUS
+      const angle = omega * t
+      px = startPosition[0] + CIRCLE_RADIUS * Math.cos(angle)
+      pz = startPosition[2] + CIRCLE_RADIUS * Math.sin(angle)
+      hdg = angle + Math.PI / 2
     } else if (behavior === 'figure8') {
-      // Figure8: heading oscillates ±60° creating left-right weaving
-      // This creates a figure8 pattern as the target weaves left and right
       const omega = Math.PI / FIGURE8_HALF_PERIOD
-      heading.current = Math.sin(time.current * omega) * CIRCLE_MAX_HEADING
-      turnRate = 0
+      px = startPosition[0] + CIRCLE_RADIUS * Math.sin(t * omega)
+      pz = startPosition[2] + CIRCLE_RADIUS * Math.sin(t * omega * 2) / 2
+      hdg = Math.atan2(
+        CIRCLE_RADIUS * Math.cos(t * omega) * omega,
+        CIRCLE_RADIUS * Math.cos(t * omega * 2) * omega
+      )
     } else {
-      const dx = pos.current.x - startPosition[0]
-      const dz = pos.current.z - startPosition[2]
+      px = pos.current.x
+      pz = pos.current.z
+      const dx = px - startPosition[0]
+      const dz = pz - startPosition[2]
       const dist = Math.sqrt(dx * dx + dz * dz)
       const dotForward = dx * Math.sin(heading.current) + dz * Math.cos(heading.current)
       if (dist > LINE_HALF_LENGTH && dotForward > 0) {
-        turnRate = CIRCLE_TURN_RATE * 3
+        heading.current += 1.5 * dt
+      } else if (dist > LINE_HALF_LENGTH * 0.95 && dotForward > 0) {
+        heading.current += 1.5 * dt * ((dist - LINE_HALF_LENGTH * 0.95) / (LINE_HALF_LENGTH * 0.05))
       }
+      hdg = heading.current
+      _vel.set(Math.sin(hdg), 0, Math.cos(hdg)).multiplyScalar(speedMs)
+      pos.current.add(_vel.clone().multiplyScalar(dt))
+      px = pos.current.x
+      pz = pos.current.z
     }
 
-    heading.current += turnRate * dt
+    py = startPosition[1] + wobbleY
 
-    _vel.set(Math.sin(heading.current), 0, Math.cos(heading.current)).multiplyScalar(speedMs)
-    pos.current.add(_vel.clone().multiplyScalar(dt))
+    if (behavior !== 'line') {
+      pos.current.set(px, py, pz)
+    } else {
+      pos.current.set(px, py, pz)
+    }
+    heading.current = hdg
 
-    const wobbleY = startPosition[1] + Math.sin(time.current * 1.5) * 2
-    group.position.set(pos.current.x, wobbleY, pos.current.z)
+    group.position.set(pos.current.x, pos.current.y, pos.current.z)
     group.rotation.y = heading.current
 
     useTargetStore.getState().updateTarget(id, {

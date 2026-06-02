@@ -14,10 +14,11 @@ interface DirectorState {
   update: () => void
 }
 
-const KP_YAW = 0.002
-const KP_PITCH = 0.0002
-const MAX_YAW_DELTA = 0.06
-const MAX_PITCH_DELTA = 0.01
+const KP_YAW = 0.001
+const KP_PITCH = 0.0001
+const MAX_YAW_DELTA = 0.02
+const MAX_PITCH_DELTA = 0.005
+const LERP_FACTOR = 0.08
 const PREDICT_DT = 0.15
 const SEARCH_DURATION = 5000
 const IMAGE_CX = 320
@@ -66,11 +67,13 @@ export const useFlightDirector = create<DirectorState>((set, get) => ({
     const errorX = predictedX - IMAGE_CX
     const errorY = predictedY - IMAGE_CY
 
-    const yawDelta = Math.max(-MAX_YAW_DELTA, Math.min(MAX_YAW_DELTA, -errorX * KP_YAW))
-    useDroneStore.setState(s => ({ yaw: s.yaw + yawDelta }))
+    const rawYawDelta = Math.max(-MAX_YAW_DELTA, Math.min(MAX_YAW_DELTA, -errorX * KP_YAW))
+    const rawPitchDelta = Math.max(-MAX_PITCH_DELTA, Math.min(MAX_PITCH_DELTA, errorY * KP_PITCH))
 
-    const pitchDelta = Math.max(-MAX_PITCH_DELTA, Math.min(MAX_PITCH_DELTA, errorY * KP_PITCH))
-    useDroneStore.setState(s => ({ pitch: Math.max(-Math.PI / 3, Math.min(Math.PI / 3, s.pitch + pitchDelta)) }))
+    const targetYaw = useDroneStore.getState().yaw + rawYawDelta
+    const targetPitch = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, useDroneStore.getState().pitch + rawPitchDelta))
+    useDroneStore.setState(s => ({ yaw: s.yaw + (targetYaw - s.yaw) * LERP_FACTOR }))
+    useDroneStore.setState(s => ({ pitch: s.pitch + (targetPitch - s.pitch) * LERP_FACTOR }))
 
     if (command === 'approach') {
       if (target.area < standoffArea) {
