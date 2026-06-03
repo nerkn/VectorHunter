@@ -26,7 +26,9 @@ Built with love for humanity. Long live the people. 🌍
 
 ## Demo
 
-https://github.com/nerkn/VectorHunter/assets/assets/drone-2026-06-03.mp4
+<video src="https://github.com/user-attachments/assets/5829b480-59f3-4e8f-97f9-46817d3c6cfb" />
+
+
 
 ---
 
