@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200">
+  <defs>
+    <linearGradient id="bodyGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#4a4a4a"/>
+      <stop offset="100%" style="stop-color:#1a1a1a"/>
+    </linearGradient>
+    <linearGradient id="armGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#333"/>
+      <stop offset="100%" style="stop-color:#555"/>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="redGlow">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Arms -->
+  <rect x="160" y="85" width="110" height="10" rx="3" fill="url(#armGrad)" transform="rotate(-15, 215, 90)"/>
+  <rect x="330" y="85" width="110" height="10" rx="3" fill="url(#armGrad)" transform="rotate(15, 385, 90)"/>
+
+  <!-- Rotors -->
+  <ellipse cx="140" cy="65" rx="35" ry="6" fill="none" stroke="#666" stroke-width="1.5" opacity="0.6"/>
+  <ellipse cx="460" cy="65" rx="35" ry="6" fill="none" stroke="#666" stroke-width="1.5" opacity="0.6"/>
+  <ellipse cx="140" cy="65" rx="22" ry="4" fill="none" stroke="#888" stroke-width="2" opacity="0.8" filter="url(#glow)"/>
+  <ellipse cx="460" cy="65" rx="22" ry="4" fill="none" stroke="#888" stroke-width="2" opacity="0.8" filter="url(#glow)"/>
+
+  <!-- Motor mounts -->
+  <rect x="132" y="78" width="16" height="12" rx="2" fill="#444"/>
+  <rect x="452" y="78" width="16" height="12" rx="2" fill="#444"/>
+
+  <!-- Body -->
+  <rect x="250" y="75" width="100" height="35" rx="8" fill="url(#bodyGrad)" stroke="#555" stroke-width="1"/>
+
+  <!-- Left camera eye -->
+  <circle cx="298" cy="88" r="9" fill="#111" stroke="#333" stroke-width="1.5"/>
+  <circle cx="298" cy="88" r="5" fill="#1a0000"/>
+  <circle cx="298" cy="88" r="3.5" fill="#ff1a1a" filter="url(#redGlow)"/>
+  <circle cx="299" cy="87" r="1.2" fill="#ff6666" opacity="0.8"/>
+
+  <!-- Right camera eye -->
+  <circle cx="322" cy="88" r="9" fill="#111" stroke="#333" stroke-width="1.5"/>
+  <circle cx="322" cy="88" r="5" fill="#1a0000"/>
+  <circle cx="322" cy="88" r="3.5" fill="#ff1a1a" filter="url(#redGlow)"/>
+  <circle cx="323" cy="87" r="1.2" fill="#ff6666" opacity="0.8"/>
+
+  <!-- Angry eyebrows -->
+  <line x1="283" y1="73" x2="305" y2="76" stroke="#ff3333" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="340" y1="73" x2="318" y2="76" stroke="#ff3333" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- Targeting lines -->
+  <line x1="298" y1="93" x2="410" y2="108" stroke="#ff3333" stroke-width="1" opacity="0.5" stroke-dasharray="4,3"/>
+  <line x1="322" y1="93" x2="420" y2="72" stroke="#ff3333" stroke-width="1" opacity="0.5" stroke-dasharray="4,3"/>
+  <line x1="310" y1="93" x2="425" y2="90" stroke="#ff3333" stroke-width="1" opacity="0.4" stroke-dasharray="4,3"/>
+
+  <!-- Crosshair on target -->
+  <circle cx="425" cy="90" r="8" fill="none" stroke="#ff3333" stroke-width="1" opacity="0.6"/>
+  <line x1="417" y1="90" x2="433" y2="90" stroke="#ff3333" stroke-width="1" opacity="0.6"/>
+  <line x1="425" y1="82" x2="425" y2="98" stroke="#ff3333" stroke-width="1" opacity="0.6"/>
+
+  <!-- Text -->
+  <text x="300" y="165" font-family="'Courier New', monospace" font-size="36" font-weight="bold" fill="#e0e0e0" text-anchor="middle" letter-spacing="6">VECTORHUNTER</text>
+  <text x="300" y="185" font-family="'Courier New', monospace" font-size="11" fill="#ff4444" text-anchor="middle" letter-spacing="3" opacity="0.7">// LOCKED ON //</text>
+</svg>
